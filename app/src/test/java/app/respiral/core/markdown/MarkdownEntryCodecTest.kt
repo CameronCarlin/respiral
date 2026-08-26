@@ -73,4 +73,41 @@ class MarkdownEntryCodecTest {
 
         assertThrows(MalformedEntryException::class.java) { codec.decode(markdown) }
     }
+
+    @Test
+    fun decode_rejects_front_matter_with_reordered_fields() {
+        val markdown = codec.encode(sampleEntry()).replaceFirst(
+            "id: 123e4567-e89b-12d3-a456-426614174000\ntitle: \"A good thing\"",
+            "title: \"A good thing\"\nid: 123e4567-e89b-12d3-a456-426614174000",
+        )
+
+        assertThrows(MalformedEntryException::class.java) { codec.decode(markdown) }
+    }
+
+    @Test
+    fun decode_rejects_tags_that_are_not_in_canonical_order() {
+        val markdown = codec.encode(
+            sampleEntry(tags = setOf(VaultTag.ACHIEVEMENT, VaultTag.WHO_I_AM)),
+        ).replace(
+            "tags: [ACHIEVEMENT, WHO_I_AM]",
+            "tags: [WHO_I_AM, ACHIEVEMENT]",
+        )
+
+        assertThrows(MalformedEntryException::class.java) { codec.decode(markdown) }
+    }
+
+    @Test
+    fun decode_rejects_volume_qualified_and_uri_like_media_paths() {
+        val volumeQualified = codec.encode(sampleEntry()).replace(
+            "media: []",
+            "media: [{path: \"C:/outside.jpg\", mimeType: \"image/jpeg\"}]",
+        )
+        val uriLike = codec.encode(sampleEntry()).replace(
+            "media: []",
+            "media: [{path: \"file:///outside.jpg\", mimeType: \"image/jpeg\"}]",
+        )
+
+        assertThrows(MalformedEntryException::class.java) { codec.decode(volumeQualified) }
+        assertThrows(MalformedEntryException::class.java) { codec.decode(uriLike) }
+    }
 }

@@ -39,7 +39,7 @@ class CanonicalMarkdownEntryCodec : MarkdownEntryCodec {
         val (frontMatter, body) = splitFrontMatter(markdown)
         val fields = parseFields(frontMatter)
 
-        return VaultEntry(
+        val entry = VaultEntry(
             id = parseUuid(fields.getValue("id")),
             title = parseQuoted(fields.getValue("title"), "title"),
             body = body,
@@ -48,6 +48,8 @@ class CanonicalMarkdownEntryCodec : MarkdownEntryCodec {
             tags = parseTags(fields.getValue("tags")),
             media = parseMedia(fields.getValue("media")),
         )
+        if (encode(entry) != markdown) malformed("Entry Markdown is not canonical")
+        return entry
     }
 
     private fun splitFrontMatter(markdown: String): Pair<String, String> {
@@ -142,7 +144,9 @@ class CanonicalMarkdownEntryCodec : MarkdownEntryCodec {
                 item.relativePath.startsWith('/') ||
                 item.relativePath.contains("..") ||
                 item.relativePath.contains('\\') ||
-                item.relativePath.contains('\u0000')
+                item.relativePath.contains('\u0000') ||
+                windowsVolumePath.matches(item.relativePath) ||
+                uriLikePath.matches(item.relativePath)
             ) {
                 malformed("Media path must be relative to the vault root")
             }
@@ -201,5 +205,7 @@ class CanonicalMarkdownEntryCodec : MarkdownEntryCodec {
     private companion object {
         val requiredKeys = setOf("id", "title", "createdAt", "updatedAt", "tags", "media")
         val mediaPattern = Regex("""\{path: ("(?:\\.|[^"\\])*"), mimeType: ("(?:\\.|[^"\\])*")\}""")
+        val windowsVolumePath = Regex("""^[A-Za-z]:[/\\].*""")
+        val uriLikePath = Regex("""^[A-Za-z][A-Za-z0-9+.-]*:.*""")
     }
 }
