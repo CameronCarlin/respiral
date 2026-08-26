@@ -15,10 +15,10 @@ data class VaultEntry internal constructor(
     private val mediaValues: List<VaultMedia>,
 ) {
     val tags: Set<VaultTag>
-        get() = tagValues
+        get() = tagValues.toSet()
 
     val media: List<VaultMedia>
-        get() = mediaValues
+        get() = mediaValues.toList()
 
     companion object {
         operator fun invoke(
