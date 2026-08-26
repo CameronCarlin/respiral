@@ -1,0 +1,18 @@
+package app.respiral
+
+import androidx.compose.ui.test.assertExists
+import androidx.compose.ui.test.junit4.createAndroidComposeRule
+import androidx.compose.ui.test.onNodeWithText
+import org.junit.Rule
+import org.junit.Test
+
+class MainActivityTest {
+    @get:Rule
+    val composeTestRule = createAndroidComposeRule<MainActivity>()
+
+    @Test
+    fun launch_shows_the_two_arrival_routes() {
+        composeTestRule.onNodeWithText("Remind me who I am").assertExists()
+        composeTestRule.onNodeWithText("Add something good").assertExists()
+    }
+}
