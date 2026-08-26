@@ -5,3 +5,5 @@ build/
 **/build/
 *.iml
 .DS_Store
+.worktrees/
+.superpowers/
