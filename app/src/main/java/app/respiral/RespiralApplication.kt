@@ -3,6 +3,9 @@ package app.respiral
 import android.app.Application
 import android.content.Context
 import app.respiral.data.settings.DataStoreSettingsRepository
+import app.respiral.core.time.SystemClock
+import app.respiral.security.DefaultVaultSession
+import app.respiral.security.VaultSession
 
 /** The app-local dependency construction root. */
 class RespiralApplication : Application() {
@@ -12,6 +15,11 @@ class RespiralApplication : Application() {
      */
     val settingsRepository: DataStoreSettingsRepository by lazy(LazyThreadSafetyMode.SYNCHRONIZED) {
         DataStoreSettingsRepository.create(this)
+    }
+
+    /** A process-local session; the vault lock never persists an app credential. */
+    val vaultSession: VaultSession by lazy(LazyThreadSafetyMode.SYNCHRONIZED) {
+        DefaultVaultSession(SystemClock)
     }
 
     companion object {

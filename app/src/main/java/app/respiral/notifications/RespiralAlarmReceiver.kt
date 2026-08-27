@@ -1,5 +1,6 @@
 package app.respiral.notifications
 
+import android.annotation.SuppressLint
 import android.Manifest
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -53,6 +54,7 @@ class RespiralAlarmReceiver : BroadcastReceiver() {
         DefaultReminderScheduler(AndroidAlarmGateway(context), SystemClock).schedule(settings)
     }
 
+    @SuppressLint("MissingPermission")
     private fun post(context: Context, notification: ReminderNotification) {
         ensureChannel(context)
         val builder = NotificationCompat.Builder(context, REMINDER_CHANNEL_ID)
