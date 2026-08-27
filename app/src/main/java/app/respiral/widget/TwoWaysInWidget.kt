@@ -1,8 +1,8 @@
 package app.respiral.widget
 
 import android.content.Context
-import android.graphics.Color
 import androidx.compose.runtime.Composable
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 import androidx.glance.Button
 import androidx.glance.GlanceModifier
@@ -18,8 +18,7 @@ import androidx.glance.layout.padding
 import androidx.glance.text.Text
 import androidx.glance.unit.ColorProvider
 
-private val WideSage = ColorProvider(Color.rgb(147, 164, 134))
-private val WideEspresso = ColorProvider(Color.rgb(43, 29, 22))
+private val WideSage = ColorProvider(Color(0xFF93A486))
 
 /** The wide capture/reflection shortcut; it contains labels only, never vault state. */
 class TwoWaysInWidget : GlanceAppWidget() {

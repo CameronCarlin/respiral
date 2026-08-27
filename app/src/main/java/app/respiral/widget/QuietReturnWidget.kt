@@ -1,8 +1,8 @@
 package app.respiral.widget
 
 import android.content.Context
-import android.graphics.Color
 import androidx.compose.runtime.Composable
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 import androidx.glance.Button
 import androidx.glance.GlanceModifier
@@ -17,9 +17,7 @@ import androidx.glance.layout.padding
 import androidx.glance.text.Text
 import androidx.glance.unit.ColorProvider
 
-private val QuietPaper = ColorProvider(Color.rgb(234, 217, 184))
-private val QuietEspresso = ColorProvider(Color.rgb(43, 29, 22))
-private val QuietMustard = ColorProvider(Color.rgb(217, 169, 46))
+private val QuietPaper = ColorProvider(Color(0xFFEAD9B8))
 
 /** A deliberately content-free one-tap return to the reflection scene. */
 class QuietReturnWidget : GlanceAppWidget() {
