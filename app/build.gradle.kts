@@ -19,6 +19,8 @@ android {
 
     buildTypes {
         release {
+            // Keep release signing outside this repository. Private installs use the debug APK;
+            // an owner/build machine may provide its own release signing configuration.
             isMinifyEnabled = false
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
