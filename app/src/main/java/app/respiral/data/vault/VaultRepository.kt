@@ -32,10 +32,21 @@ interface VaultRepository {
     suspend fun rebuildIndex()
 }
 
-class DefaultVaultRepository(
+class DefaultVaultRepository private constructor(
     private val fileStore: VaultFileStore,
     private val database: RespiralDatabase,
+    private val afterSaveIndexUpsert: suspend () -> Unit,
 ) : VaultRepository {
+    constructor(fileStore: VaultFileStore, database: RespiralDatabase) : this(fileStore, database, {})
+
+    internal companion object {
+        fun withAfterSaveIndexUpsert(
+            fileStore: VaultFileStore,
+            database: RespiralDatabase,
+            afterSaveIndexUpsert: suspend () -> Unit,
+        ): DefaultVaultRepository = DefaultVaultRepository(fileStore, database, afterSaveIndexUpsert)
+    }
+
     private val indexDao = database.entryIndexDao()
 
     override suspend fun save(entry: VaultEntry, pendingMedia: List<PendingMedia>): VaultEntry {
@@ -44,6 +55,7 @@ class DefaultVaultRepository(
         try {
             database.withTransaction {
                 indexDao.upsert(staged.entry.toIndexEntity())
+                afterSaveIndexUpsert()
             }
             promoted.complete()
             return staged.entry
@@ -55,7 +67,7 @@ class DefaultVaultRepository(
 
     override fun observeTimeline(query: String, tags: Set<VaultTag>): Flow<List<VaultEntrySummary>> =
         indexDao.observeTimeline(
-            query = query,
+            query = query.escapeLikePattern(),
             hasSelectedTags = tags.isNotEmpty(),
             includeAchievement = VaultTag.ACHIEVEMENT in tags,
             includeAffirmation = VaultTag.AFFIRMATION in tags,
@@ -106,3 +118,10 @@ private fun EntryIndexEntity.toSummary(): VaultEntrySummary = VaultEntrySummary(
         .map(VaultTag::valueOf)
         .toSet(),
 )
+
+private fun String.escapeLikePattern(): String = buildString(length) {
+    for (character in this@escapeLikePattern) {
+        if (character == '%' || character == '_' || character == '\\') append('\\')
+        append(character)
+    }
+}

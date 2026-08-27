@@ -48,7 +48,16 @@ class VaultFileStore {
 
     /** Writes canonical Markdown atomically without changing media files. */
     fun write(entry: VaultEntry) {
-        val staged = stage(entry, emptyList())
+        ensureDirectory(entriesDirectory())
+        val markdownDestination = markdownFile(entry.id)
+        val markdownTemporary = temporarySibling(markdownDestination)
+        try {
+            markdownTemporary.writeText(codec.encode(entry), Charsets.UTF_8)
+        } catch (error: Throwable) {
+            markdownTemporary.delete()
+            throw error
+        }
+        val staged = StagedEntry(entry, markdownTemporary, markdownDestination, media = null)
         val promoted = promote(staged)
         try {
             promoted.complete()
@@ -60,46 +69,45 @@ class VaultFileStore {
 
     internal fun stage(entry: VaultEntry, pendingMedia: List<PendingMedia>): StagedEntry {
         ensureDirectory(entriesDirectory())
-        val persistedEntry = if (pendingMedia.isEmpty()) {
-            entry
-        } else {
-            VaultEntry(
-                id = entry.id,
-                title = entry.title,
-                body = entry.body,
-                createdAt = entry.createdAt,
-                updatedAt = entry.updatedAt,
-                tags = entry.tags,
-                media = pendingMedia.mapIndexed { index, media ->
-                    VaultMedia("media/${entry.id}/$index${extensionFor(media.mimeType)}", media.mimeType)
-                },
-            )
-        }
-        val temporaryMedia = mutableListOf<TemporaryMedia>()
+        val persistedEntry = VaultEntry(
+            id = entry.id,
+            title = entry.title,
+            body = entry.body,
+            createdAt = entry.createdAt,
+            updatedAt = entry.updatedAt,
+            tags = entry.tags,
+            media = pendingMedia.mapIndexed { index, media ->
+                VaultMedia("media/${entry.id}/$index${extensionFor(media.mimeType)}", media.mimeType)
+            },
+        )
+        val mediaDestination = mediaDirectory(entry.id)
+        var mediaTemporary: File? = null
         var markdownTemporary: File? = null
 
         try {
-            pendingMedia.forEachIndexed { index, media ->
-                val destination = mediaDirectory(entry.id).resolve("$index${extensionFor(media.mimeType)}")
-                ensureDirectory(destination.getParentFile()!!)
-                val temporary = temporarySibling(destination)
-                try {
+            if (pendingMedia.isNotEmpty()) {
+                ensureDirectory(mediaDestination.getParentFile()!!)
+                mediaTemporary = temporarySibling(mediaDestination)
+                ensureDirectory(mediaTemporary)
+                pendingMedia.forEachIndexed { index, media ->
+                    val temporary = mediaTemporary.resolve("$index${extensionFor(media.mimeType)}")
                     openInputStream(media.source)?.use { input ->
                         temporary.outputStream().buffered().use { output -> input.copyTo(output) }
                     } ?: throw FileNotFoundException("Unable to open selected media: ${media.source}")
-                } catch (error: Throwable) {
-                    temporary.delete()
-                    throw error
                 }
-                temporaryMedia += TemporaryMedia(temporary, destination)
             }
 
             val markdownDestination = markdownFile(entry.id)
             markdownTemporary = temporarySibling(markdownDestination)
             markdownTemporary.writeText(codec.encode(persistedEntry), Charsets.UTF_8)
-            return StagedEntry(persistedEntry, markdownTemporary, markdownDestination, temporaryMedia)
+            return StagedEntry(
+                entry = persistedEntry,
+                markdownTemporary = markdownTemporary,
+                markdownDestination = markdownDestination,
+                media = StagedMediaDirectory(mediaTemporary, mediaDestination),
+            )
         } catch (error: Throwable) {
-            temporaryMedia.forEach { it.temporary.delete() }
+            mediaTemporary?.deleteRecursively()
             markdownTemporary?.delete()
             throw error
         }
@@ -108,14 +116,12 @@ class VaultFileStore {
     internal fun promote(staged: StagedEntry): PromotedEntry {
         val promoted = mutableListOf<PromotedFile>()
         try {
-            staged.media.forEach { media ->
-                promoted += promoteFile(media.temporary, media.destination)
-            }
+            staged.media?.let { media -> promoted += promotePath(media.temporary, media.destination) }
             promoted += promoteFile(staged.markdownTemporary, staged.markdownDestination)
             return PromotedEntry(promoted)
         } catch (error: Throwable) {
             promoted.asReversed().forEach(PromotedFile::restore)
-            staged.media.forEach { it.temporary.delete() }
+            staged.media?.temporary?.deleteRecursively()
             staged.markdownTemporary.delete()
             throw error
         }
@@ -140,10 +146,10 @@ class VaultFileStore {
         val entry: VaultEntry,
         val markdownTemporary: File,
         val markdownDestination: File,
-        val media: List<TemporaryMedia>,
+        val media: StagedMediaDirectory?,
     )
 
-    internal class TemporaryMedia(val temporary: File, val destination: File)
+    internal class StagedMediaDirectory(val temporary: File?, val destination: File)
 
     internal class PromotedFile(val destination: File, val backup: File?) {
         fun restore() {
@@ -181,13 +187,17 @@ class VaultFileStore {
     }
 
     private fun promoteFile(temporary: File, destination: File): PromotedFile {
+        return promotePath(temporary, destination)
+    }
+
+    private fun promotePath(temporary: File?, destination: File): PromotedFile {
         val backup = destination.takeIf { it.exists() }?.let {
             destination.resolveSibling("${destination.getName()}.backup-${UUID.randomUUID()}").also { backup ->
                 move(destination, backup)
             }
         }
         try {
-            move(temporary, destination)
+            temporary?.let { move(it, destination) }
         } catch (error: Throwable) {
             backup?.let { move(it, destination) }
             throw error

@@ -22,8 +22,8 @@ interface EntryIndexDao {
         SELECT * FROM entry_index
         WHERE (
             :query = ''
-            OR title LIKE '%' || :query || '%' COLLATE NOCASE
-            OR bodyForSearch LIKE '%' || :query || '%' COLLATE NOCASE
+            OR title LIKE '%' || :query || '%' ESCAPE '\' COLLATE NOCASE
+            OR bodyForSearch LIKE '%' || :query || '%' ESCAPE '\' COLLATE NOCASE
         )
         AND (
             :hasSelectedTags = 0
