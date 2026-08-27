@@ -97,6 +97,7 @@ fun EntryEditorScreen(
             message?.let { Text(it, color = MaterialTheme.colorScheme.error) }
             Button(
                 modifier = Modifier.fillMaxWidth(),
+                enabled = !viewModel.isLoading,
                 onClick = {
                     scope.launch {
                         if (viewModel.save()) onSaved(viewModel.title) else message = viewModel.errorMessage

@@ -9,11 +9,16 @@ import com.google.common.truth.Truth.assertThat
 import java.io.IOException
 import java.time.Instant
 import java.util.UUID
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.emptyFlow
+import kotlinx.coroutines.async
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import org.junit.Test
 
+@OptIn(ExperimentalCoroutinesApi::class)
 class EntryEditorViewModelTest {
     @Test
     fun saving_existing_photo_entry_without_new_selection_retains_existing_media() = runTest {
@@ -34,6 +39,32 @@ class EntryEditorViewModelTest {
         assertThat(viewModel.save()).isTrue()
         assertThat(repository.savedEntry?.media).isEqualTo(existing.media)
         assertThat(repository.savedPendingMedia).isEmpty()
+    }
+
+    @Test
+    fun existing_photo_entry_cannot_save_before_load_completes() = runTest {
+        val id = UUID.randomUUID()
+        val existing = VaultEntry(
+            id = id,
+            title = "A photo note",
+            body = "A note with a photo.",
+            createdAt = Instant.parse("2026-08-26T09:00:00Z"),
+            updatedAt = Instant.parse("2026-08-26T10:00:00Z"),
+            tags = emptySet(),
+            media = listOf(app.respiral.core.model.VaultMedia("media/$id/0.jpg", "image/jpeg")),
+        )
+        val repository = DeferredRecordingVaultRepository(existing)
+        val viewModel = EntryEditorViewModel(repository, entryId = existing.id)
+        val loading = async { viewModel.load() }
+        runCurrent()
+
+        assertThat(viewModel.save()).isFalse()
+        assertThat(repository.savedEntry).isNull()
+
+        repository.allowGet.complete(Unit)
+        assertThat(loading.await()).isTrue()
+        assertThat(viewModel.save()).isTrue()
+        assertThat(repository.savedEntry?.media).isEqualTo(existing.media)
     }
 
     @Test
@@ -63,6 +94,27 @@ private class RecordingVaultRepository(private val existing: VaultEntry) : Vault
     override fun observeTimeline(query: String, tags: Set<VaultTag>): Flow<List<VaultEntrySummary>> = emptyFlow()
 
     override suspend fun get(id: UUID): VaultEntry = existing
+
+    override suspend fun delete(id: UUID) = Unit
+
+    override suspend fun rebuildIndex() = Unit
+}
+
+private class DeferredRecordingVaultRepository(private val existing: VaultEntry) : VaultRepository {
+    val allowGet = CompletableDeferred<Unit>()
+    var savedEntry: VaultEntry? = null
+
+    override suspend fun save(entry: VaultEntry, pendingMedia: List<PendingMedia>): VaultEntry {
+        savedEntry = entry
+        return entry
+    }
+
+    override fun observeTimeline(query: String, tags: Set<VaultTag>): Flow<List<VaultEntrySummary>> = emptyFlow()
+
+    override suspend fun get(id: UUID): VaultEntry {
+        allowGet.await()
+        return existing
+    }
 
     override suspend fun delete(id: UUID) = Unit
 

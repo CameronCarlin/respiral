@@ -83,3 +83,20 @@ UI was added.
 ## Concern
 
 Instrumentation behavior has not been run on an Android device because there are no connected ADB devices and the project-local SDK does not include an emulator executable. The test APK is assembled successfully and is ready to run when a device or emulator is available.
+
+## Review regression fixes (2026-08-27)
+
+- Existing-entry Save is disabled during asynchronous loading and `EntryEditorViewModel.save()` rejects any existing-entry save until loading has completed, preventing a photo-bearing entry from being persisted with empty media.
+- Retained media references are now validated as existing regular files inside that entry's canonical media directory (including symlink/canonical-path validation). Missing or outside-directory references fail during staging before Markdown, media, or index promotion.
+- Corrected the index-promotion rollback regression to assert that the actual appended filename (`1.png`, after retained `0.jpg`) is absent and that no temporary or backup artifacts remain.
+
+### Regression TDD evidence
+
+- RED: focused tests reproduced all three findings: the deferred existing-entry save was accepted before load, missing/outside retained media did not fail, and the prior rollback assertion checked ineffective `0.png`.
+- GREEN: focused command
+  `JAVA_HOME="$PWD/.tooling/jdk/Contents/Home" ANDROID_HOME="$PWD/.tooling/android-sdk" GRADLE_USER_HOME="$PWD/.gradle" ./gradlew :app:testDebugUnitTest --tests app.respiral.ui.capture.EntryEditorViewModelTest --tests app.respiral.data.vault.VaultRepositoryTest --rerun-tasks --console=plain`
+  completed successfully; 18 tests ran (3 ViewModel, 15 repository), with zero failures/errors.
+- Full unit/build command
+  `JAVA_HOME="$PWD/.tooling/jdk/Contents/Home" ANDROID_HOME="$PWD/.tooling/android-sdk" GRADLE_USER_HOME="$PWD/.gradle" ./gradlew :app:testDebugUnitTest :app:assembleDebug :app:assembleDebugAndroidTest --console=plain`
+  completed with `BUILD SUCCESSFUL`; 34 JVM tests ran with zero failures/errors. Debug APK and debug androidTest APK were both assembled.
+- `git diff --check` completed with no whitespace findings.

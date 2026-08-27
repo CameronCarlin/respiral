@@ -4,6 +4,7 @@ import android.net.Uri
 import androidx.room.Room
 import androidx.test.core.app.ApplicationProvider
 import app.respiral.core.markdown.CanonicalMarkdownEntryCodec
+import app.respiral.core.model.VaultMedia
 import app.respiral.core.model.VaultTag
 import app.respiral.data.index.RespiralDatabase
 import app.respiral.laterInstant
@@ -28,6 +29,7 @@ class VaultRepositoryTest {
     private lateinit var vaultRoot: File
     private lateinit var sourceJpeg: File
     private lateinit var sourcePng: File
+    private lateinit var outsideMedia: File
     private lateinit var database: RespiralDatabase
     private lateinit var fileStore: VaultFileStore
     private lateinit var repository: VaultRepository
@@ -47,6 +49,9 @@ class VaultRepositoryTest {
         }
         sourcePng = File.createTempFile("respiral-source-", ".png").apply {
             writeBytes(byteArrayOf(0x04, 0x05, 0x06))
+        }
+        outsideMedia = vaultRoot.resolve("outside.jpg").apply {
+            writeBytes(byteArrayOf(0x07, 0x08, 0x09))
         }
         database = Room.inMemoryDatabaseBuilder(
             ApplicationProvider.getApplicationContext(),
@@ -68,6 +73,7 @@ class VaultRepositoryTest {
         vaultRoot.deleteRecursively()
         sourceJpeg.delete()
         sourcePng.delete()
+        outsideMedia.delete()
     }
 
     @Test
@@ -137,6 +143,52 @@ class VaultRepositoryTest {
     }
 
     @Test
+    fun missing_retained_media_fails_without_changing_markdown_media_or_index() = runTest {
+        val original = repository.save(sampleEntry(title = "Original"), listOf(pendingJpeg))
+        val originalMarkdown = vaultRoot.resolve("entries/${original.id}.md").readBytes()
+        val originalMedia = vaultRoot.resolve("media/${original.id}/0.jpg").readBytes()
+
+        val failure = runCatching {
+            repository.save(
+                original.withMedia(
+                    title = "Replacement",
+                    media = listOf(VaultMedia("media/${original.id}/missing.jpg", "image/jpeg")),
+                ),
+                emptyList(),
+            )
+        }.exceptionOrNull()
+
+        assertThat(failure).isInstanceOf(IOException::class.java)
+        assertThat(vaultRoot.resolve("entries/${original.id}.md").readBytes()).isEqualTo(originalMarkdown)
+        assertThat(vaultRoot.resolve("media/${original.id}/0.jpg").readBytes()).isEqualTo(originalMedia)
+        assertThat(repository.get(original.id)).isEqualTo(original)
+        assertThat(repository.observeTimeline("", emptySet()).first().single().title).isEqualTo("Original")
+    }
+
+    @Test
+    fun outside_retained_media_fails_without_changing_markdown_media_or_index() = runTest {
+        val original = repository.save(sampleEntry(title = "Original"), listOf(pendingJpeg))
+        val originalMarkdown = vaultRoot.resolve("entries/${original.id}.md").readBytes()
+        val originalMedia = vaultRoot.resolve("media/${original.id}/0.jpg").readBytes()
+
+        val failure = runCatching {
+            repository.save(
+                original.withMedia(
+                    title = "Replacement",
+                    media = listOf(VaultMedia("${outsideMedia.name}", "image/jpeg")),
+                ),
+                emptyList(),
+            )
+        }.exceptionOrNull()
+
+        assertThat(failure).isInstanceOf(IOException::class.java)
+        assertThat(vaultRoot.resolve("entries/${original.id}.md").readBytes()).isEqualTo(originalMarkdown)
+        assertThat(vaultRoot.resolve("media/${original.id}/0.jpg").readBytes()).isEqualTo(originalMedia)
+        assertThat(repository.get(original.id)).isEqualTo(original)
+        assertThat(repository.observeTimeline("", emptySet()).first().single().title).isEqualTo("Original")
+    }
+
+    @Test
     fun delete_removes_markdown_media_and_index_row() = runTest {
         val saved = repository.save(sampleEntry(), listOf(pendingJpeg))
 
@@ -196,7 +248,12 @@ class VaultRepositoryTest {
         assertThat(repository.get(original.id).media.single().relativePath)
             .isEqualTo("media/${original.id}/0.jpg")
         assertThat(vaultRoot.resolve("media/${original.id}/0.jpg").exists()).isTrue()
-        assertThat(vaultRoot.resolve("media/${original.id}/0.png").exists()).isFalse()
+        assertThat(vaultRoot.resolve("media/${original.id}/1.png").exists()).isFalse()
+        assertThat(
+            vaultRoot.walk().none {
+                it.name.contains("temporary-") || it.name.contains("backup-")
+            },
+        ).isTrue()
         assertThat(repository.observeTimeline("", emptySet()).first().single().title).isEqualTo("Original")
     }
 
@@ -336,3 +393,16 @@ class VaultRepositoryTest {
         ).containsExactly("New affirmation", "Old achievement").inOrder()
     }
 }
+
+private fun app.respiral.core.model.VaultEntry.withMedia(
+    title: String,
+    media: List<VaultMedia>,
+): app.respiral.core.model.VaultEntry = app.respiral.core.model.VaultEntry(
+    id = id,
+    title = title,
+    body = body,
+    createdAt = createdAt,
+    updatedAt = updatedAt,
+    tags = tags,
+    media = media,
+)

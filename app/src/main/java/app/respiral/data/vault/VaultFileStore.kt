@@ -97,13 +97,18 @@ class VaultFileStore {
 
             existingMedia.forEach { media ->
                 val source = vaultRoot.resolve(media.relativePath)
-                if (source.exists()) {
-                    runCatching { source.relativeTo(mediaDestination) }.getOrNull()?.let { relativePath ->
-                        val destination = mediaTemporary.resolve(relativePath)
-                        ensureDirectory(destination.getParentFile()!!)
-                        source.copyTo(destination, overwrite = false)
-                    }
+                val canonicalSource = source.canonicalFile
+                val canonicalMediaDestination = mediaDestination.canonicalFile
+                if (!canonicalSource.exists() || !canonicalSource.isFile) {
+                    throw FileNotFoundException("Retained media is missing: ${media.relativePath}")
                 }
+                if (!canonicalSource.toPath().startsWith(canonicalMediaDestination.toPath())) {
+                    throw IOException("Retained media is outside its entry directory: ${media.relativePath}")
+                }
+                val relativePath = canonicalSource.relativeTo(canonicalMediaDestination)
+                val destination = mediaTemporary.resolve(relativePath)
+                ensureDirectory(destination.getParentFile()!!)
+                canonicalSource.copyTo(destination, overwrite = false)
             }
             pendingMedia.forEachIndexed { index, media ->
                 val destination = mediaTemporary.resolve(newMediaNames[index])

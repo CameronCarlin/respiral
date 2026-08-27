@@ -23,24 +23,39 @@ class EntryEditorViewModel(
     var tags by mutableStateOf(initialTags)
     var errorMessage by mutableStateOf<String?>(null)
         private set
+    var isLoading by mutableStateOf(entryId != null)
+        private set
 
     private val pendingMedia = mutableStateListOf<PendingMedia>()
     val media: List<PendingMedia>
         get() = pendingMedia.toList()
 
     private var existingEntry: VaultEntry? = null
+    private var existingEntryLoaded = entryId == null
 
-    suspend fun load(): Boolean = try {
-        entryId?.let { repository.get(it) }?.also { entry ->
-            existingEntry = entry
-            title = entry.title
-            body = entry.body
-            tags = entry.tags
+    suspend fun load(): Boolean {
+        if (entryId == null) {
+            isLoading = false
+            existingEntryLoaded = true
+            return true
         }
-        true
-    } catch (_: Throwable) {
-        errorMessage = "Couldn't open this entry. Your draft is still here."
-        false
+        isLoading = true
+        existingEntryLoaded = false
+        return try {
+            repository.get(entryId).also { entry ->
+                existingEntry = entry
+                title = entry.title
+                body = entry.body
+                tags = entry.tags
+            }
+            existingEntryLoaded = true
+            true
+        } catch (_: Throwable) {
+            errorMessage = "Couldn't open this entry. Your draft is still here."
+            false
+        } finally {
+            isLoading = false
+        }
     }
 
     fun addPhoto(media: PendingMedia) {
@@ -52,26 +67,32 @@ class EntryEditorViewModel(
         pendingMedia.remove(media)
     }
 
-    suspend fun save(): Boolean = try {
-        val timestamp = now()
-        val previous = existingEntry
-        repository.save(
-            VaultEntry(
-                id = previous?.id ?: entryId ?: UUID.randomUUID(),
-                title = title,
-                body = body,
-                createdAt = previous?.createdAt ?: timestamp,
-                updatedAt = timestamp,
-                tags = tags,
-                media = previous?.media.orEmpty(),
-            ),
-            pendingMedia.toList(),
-        )
-        errorMessage = null
-        true
-    } catch (_: Throwable) {
-        errorMessage = "Couldn't save this entry. Your draft is still here."
-        false
+    suspend fun save(): Boolean {
+        if (!existingEntryLoaded) {
+            errorMessage = "This entry is still loading. Try again in a moment."
+            return false
+        }
+        return try {
+            val timestamp = now()
+            val previous = existingEntry
+            repository.save(
+                VaultEntry(
+                    id = previous?.id ?: entryId ?: UUID.randomUUID(),
+                    title = title,
+                    body = body,
+                    createdAt = previous?.createdAt ?: timestamp,
+                    updatedAt = timestamp,
+                    tags = tags,
+                    media = previous?.media.orEmpty(),
+                ),
+                pendingMedia.toList(),
+            )
+            errorMessage = null
+            true
+        } catch (_: Throwable) {
+            errorMessage = "Couldn't save this entry. Your draft is still here."
+            false
+        }
     }
 
     suspend fun delete(): Boolean = try {
