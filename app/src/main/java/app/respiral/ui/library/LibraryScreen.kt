@@ -76,6 +76,12 @@ fun LibraryScreen(
             Button(onClick = { onReflect(viewModel.selectedTags) }) {
                 Text(if (viewModel.selectedTags.isEmpty()) "Reflect on a note" else "Reflect on these notes")
             }
+            if (viewModel.loadError) {
+                Text(
+                    "Your vault could not be opened just now. Nothing has been changed.",
+                    color = MaterialTheme.colorScheme.error,
+                )
+            }
             if (entries.isEmpty()) {
                 val emptyMessage = if (viewModel.query.isBlank() && viewModel.selectedTags.isEmpty()) {
                     "Nothing is here yet. Add a small good thing whenever you are ready."

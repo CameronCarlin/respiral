@@ -10,6 +10,7 @@ import java.time.Instant
 import java.util.UUID
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
@@ -29,6 +30,25 @@ class LibraryViewModelTest {
 
         assertThat(viewModel.entries.value).containsExactly(newer, older).inOrder()
         assertThat(repository.queries.last()).isEqualTo("kindness")
+    }
+
+    @Test
+    fun timeline_failure_is_presented_as_an_empty_library_instead_of_escaping() = runTest {
+        val repository = object : VaultRepository {
+            override suspend fun save(entry: VaultEntry, pendingMedia: List<PendingMedia>): VaultEntry = entry
+            override fun observeTimeline(query: String, tags: Set<VaultTag>): Flow<List<VaultEntrySummary>> = flow {
+                error("corrupt index")
+            }
+            override suspend fun get(id: UUID): VaultEntry = error("unused")
+            override suspend fun delete(id: UUID) = Unit
+            override suspend fun rebuildIndex() = Unit
+        }
+
+        val viewModel = LibraryViewModel(repository, backgroundScope)
+        runCurrent()
+
+        assertThat(viewModel.entries.value).isEmpty()
+        assertThat(viewModel.loadError).isTrue()
     }
 }
 
