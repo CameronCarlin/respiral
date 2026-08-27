@@ -81,17 +81,25 @@ class ZipVaultTransfer(
         if (!root.mkdirs()) throw InvalidVaultArchiveException("Unable to prepare import")
         return try {
             val paths = linkedSetOf<String>()
+            var archiveEntryCount = 0
+            var totalUncompressedBytes = 0L
             source.use { input ->
                 ZipInputStream(input.buffered()).use { zip ->
                     while (true) {
                         val entry = zip.nextEntry ?: break
+                        archiveEntryCount += 1
+                        if (archiveEntryCount > MAX_ARCHIVE_ENTRY_COUNT) {
+                            invalid("Archive contains too many entries")
+                        }
                         val path = validateArchivePath(entry.name)
                         if (!paths.add(path)) invalid("Archive contains duplicate paths")
                         val destination = root.resolve(path)
                         destination.parentFile?.let { parent ->
                             if (!parent.exists() && !parent.mkdirs()) invalid("Unable to extract archive")
                         }
-                        destination.outputStream().buffered().use { output -> zip.copyTo(output) }
+                        destination.outputStream().buffered().use { output ->
+                            totalUncompressedBytes += copyEntryWithLimits(zip, output, totalUncompressedBytes)
+                        }
                         zip.closeEntry()
                     }
                 }
@@ -145,9 +153,13 @@ class ZipVaultTransfer(
             entry
         }.sortedBy { it.id.toString() }
 
-        val referencedMedia = entries.flatMap { entry ->
+        val mediaReferences = entries.flatMap { entry ->
             entry.media.map { media -> validateImportedMediaPath(entry, media.relativePath) }
-        }.toSet()
+        }
+        if (mediaReferences.size != mediaReferences.toSet().size) {
+            invalid("Archive Markdown contains duplicate media references")
+        }
+        val referencedMedia = mediaReferences.toSet()
         val archiveMedia = paths.filter { it.startsWith("media/") }.toSet()
         if (referencedMedia != archiveMedia) invalid("Archive media does not match Markdown references")
         archiveMedia.forEach { path ->
@@ -199,6 +211,26 @@ class ZipVaultTransfer(
         .put("mediaCount", mediaCount)
         .toString()
 
+    private fun copyEntryWithLimits(input: InputStream, output: OutputStream, totalBefore: Long): Long {
+        val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
+        var entryBytes = 0L
+        while (true) {
+            val read = input.read(buffer)
+            if (read < 0) break
+            if (read == 0) continue
+            val readBytes = read.toLong()
+            if (entryBytes > MAX_ENTRY_UNCOMPRESSED_BYTES - readBytes) {
+                invalid("Archive entry exceeds the decompressed size limit")
+            }
+            if (totalBefore > MAX_TOTAL_UNCOMPRESSED_BYTES - entryBytes - readBytes) {
+                invalid("Archive exceeds the total decompressed size limit")
+            }
+            output.write(buffer, 0, read)
+            entryBytes += readBytes
+        }
+        return entryBytes
+    }
+
     private fun invalid(message: String): Nothing = throw InvalidVaultArchiveException(message)
 
     private fun JSONObject.intField(name: String): Int = try {
@@ -229,7 +261,12 @@ class ZipVaultTransfer(
         val mediaCount: Int,
     )
 
-    private companion object {
+    internal companion object {
         const val FORMAT_VERSION = 1
+
+        /** Hard limits keep malformed or compressed-bomb imports bounded in memory and on disk. */
+        internal const val MAX_ARCHIVE_ENTRY_COUNT = 512
+        internal const val MAX_ENTRY_UNCOMPRESSED_BYTES = 16L * 1024L * 1024L
+        internal const val MAX_TOTAL_UNCOMPRESSED_BYTES = 64L * 1024L * 1024L
     }
 }

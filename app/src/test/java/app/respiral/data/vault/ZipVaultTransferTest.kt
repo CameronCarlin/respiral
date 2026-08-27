@@ -162,6 +162,46 @@ class ZipVaultTransferTest {
         assertThat(error).isInstanceOf(InvalidVaultArchiveException::class.java)
     }
 
+    @Test
+    fun oversized_archive_entry_is_rejected_before_import() = runTest {
+        val id = UUID.randomUUID()
+        val oversizedEntry = sampleEntry(
+            id = id,
+            body = "x".repeat(ZipVaultTransfer.MAX_ENTRY_UNCOMPRESSED_BYTES.toInt() + 1),
+        )
+        val archive = zipOf(
+            "manifest.json" to manifest(entryCount = 1, mediaCount = 0),
+            "entries/$id.md" to CanonicalMarkdownEntryCodec().encode(oversizedEntry),
+        )
+
+        val error = runCatching { transfer.preview(archive.inputStream()) }.exceptionOrNull()
+
+        assertThat(error).isInstanceOf(InvalidVaultArchiveException::class.java)
+        assertThat(error).hasMessageThat().contains("decompressed size limit")
+    }
+
+    @Test
+    fun duplicate_markdown_media_reference_is_rejected() = runTest {
+        val id = UUID.fromString("123e4567-e89b-12d3-a456-426614174010")
+        val entry = sampleEntry(
+            id = id,
+            media = listOf(
+                VaultMedia("media/$id/photo.jpg", "image/jpeg"),
+                VaultMedia("media/$id/photo.jpg", "image/jpeg"),
+            ),
+        )
+        val archive = zipOf(
+            "manifest.json" to manifest(entryCount = 1, mediaCount = 1),
+            "entries/$id.md" to CanonicalMarkdownEntryCodec().encode(entry),
+            "media/$id/photo.jpg" to "media",
+        )
+
+        val error = runCatching { transfer.preview(archive.inputStream()) }.exceptionOrNull()
+
+        assertThat(error).isInstanceOf(InvalidVaultArchiveException::class.java)
+        assertThat(error).hasMessageThat().contains("duplicate media references")
+    }
+
     private fun archiveWith(entry: VaultEntry): ByteArray = archiveOf(entry)
 
     private fun archiveOf(entry: VaultEntry, includeMedia: Boolean = true): ByteArray {
