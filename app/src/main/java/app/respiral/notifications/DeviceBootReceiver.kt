@@ -3,7 +3,7 @@ package app.respiral.notifications
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
-import app.respiral.data.settings.DataStoreSettingsRepository
+import app.respiral.RespiralApplication
 import app.respiral.core.time.SystemClock
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -17,7 +17,7 @@ class DeviceBootReceiver : BroadcastReceiver() {
         val appContext = context.applicationContext
         CoroutineScope(Dispatchers.IO).launch {
             try {
-                val settings = DataStoreSettingsRepository.create(appContext).settings.first()
+                val settings = RespiralApplication.from(appContext).settingsRepository.settings.first()
                 if (settings.reminderModes.isNotEmpty() && settings.reminderTime != null) {
                     DefaultReminderScheduler(AndroidAlarmGateway(appContext), SystemClock).schedule(settings)
                 }

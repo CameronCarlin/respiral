@@ -10,10 +10,10 @@ import android.content.pm.PackageManager
 import android.os.Build
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
+import app.respiral.RespiralApplication
 import app.respiral.core.markdown.CanonicalMarkdownEntryCodec
 import app.respiral.core.time.SystemClock
 import app.respiral.data.index.RespiralDatabase
-import app.respiral.data.settings.DataStoreSettingsRepository
 import app.respiral.data.vault.DefaultVaultRepository
 import app.respiral.data.vault.VaultFileStore
 import app.respiral.data.vault.VaultRepository
@@ -37,7 +37,7 @@ class RespiralAlarmReceiver : BroadcastReceiver() {
     }
 
     private suspend fun deliver(context: Context) {
-        val settings = DataStoreSettingsRepository.create(context).settings.first()
+        val settings = RespiralApplication.from(context).settingsRepository.settings.first()
         if (settings.reminderModes.isEmpty() || settings.reminderTime == null) return
 
         val repository = defaultVaultRepository(context)

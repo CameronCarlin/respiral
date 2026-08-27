@@ -13,10 +13,10 @@ import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
+import app.respiral.RespiralApplication
 import app.respiral.core.markdown.CanonicalMarkdownEntryCodec
 import app.respiral.core.model.VaultTag
 import app.respiral.data.index.RespiralDatabase
-import app.respiral.data.settings.DataStoreSettingsRepository
 import app.respiral.data.settings.SettingsRepository
 import app.respiral.data.vault.DefaultVaultRepository
 import app.respiral.data.vault.VaultFileStore
@@ -41,7 +41,7 @@ private const val EDITOR_ROUTE = "editor?id={id}&prompt={prompt}&tags={tags}"
 fun AppNavGraph() {
     val context = LocalContext.current.applicationContext
     val repository = remember(context) { defaultVaultRepository(context) }
-    val settingsRepository = remember(context) { DataStoreSettingsRepository.create(context) }
+    val settingsRepository = remember(context) { RespiralApplication.from(context).settingsRepository }
     AppNavGraph(repository, settingsRepository)
 }
 
