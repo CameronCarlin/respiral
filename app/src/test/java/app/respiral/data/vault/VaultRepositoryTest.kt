@@ -104,18 +104,35 @@ class VaultRepositoryTest {
     }
 
     @Test
-    fun editing_media_replaces_the_complete_media_set_without_orphans() = runTest {
+    fun editing_an_entry_without_new_media_preserves_existing_media() = runTest {
+        val original = repository.save(sampleEntry(), listOf(pendingJpeg))
+        vaultRoot.resolve("media/${original.id}/orphan.bin").writeBytes(byteArrayOf(0x09))
+
+        val saved = repository.save(original.copy(title = "Revised"), emptyList())
+
+        assertThat(saved.media).isEqualTo(original.media)
+        assertThat(vaultRoot.resolve("media/${saved.id}/0.jpg").readBytes())
+            .isEqualTo(byteArrayOf(0x01, 0x02, 0x03))
+        assertThat(vaultRoot.resolve("media/${saved.id}/orphan.bin").exists()).isFalse()
+    }
+
+    @Test
+    fun editing_media_appends_new_media_without_orphans() = runTest {
         val original = repository.save(sampleEntry(), listOf(pendingJpeg, pendingJpeg))
 
         val saved = repository.save(original.copy(title = "PNG replacement"), listOf(pendingPng))
 
-        assertThat(saved.media).hasSize(1)
-        assertThat(saved.media.single().relativePath).isEqualTo("media/${saved.id}/0.png")
-        assertThat(vaultRoot.resolve("media/${saved.id}/0.png").readBytes())
+        assertThat(saved.media).hasSize(3)
+        assertThat(saved.media.map { it.relativePath }).containsExactly(
+            "media/${saved.id}/0.jpg",
+            "media/${saved.id}/1.jpg",
+            "media/${saved.id}/2.png",
+        ).inOrder()
+        assertThat(vaultRoot.resolve("media/${saved.id}/2.png").readBytes())
             .isEqualTo(byteArrayOf(0x04, 0x05, 0x06))
-        assertThat(vaultRoot.resolve("media/${saved.id}/0.jpg").exists()).isFalse()
-        assertThat(vaultRoot.resolve("media/${saved.id}/1.jpg").exists()).isFalse()
-        assertThat(vaultRoot.resolve("media/${saved.id}").listFiles().orEmpty()).hasLength(1)
+        assertThat(vaultRoot.resolve("media/${saved.id}/0.jpg").exists()).isTrue()
+        assertThat(vaultRoot.resolve("media/${saved.id}/1.jpg").exists()).isTrue()
+        assertThat(vaultRoot.resolve("media/${saved.id}").listFiles().orEmpty()).hasLength(3)
         assertThat(repository.get(saved.id).media).isEqualTo(saved.media)
     }
 

@@ -7,6 +7,7 @@ import app.respiral.data.vault.VaultEntrySummary
 import app.respiral.data.vault.VaultRepository
 import com.google.common.truth.Truth.assertThat
 import java.io.IOException
+import java.time.Instant
 import java.util.UUID
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.emptyFlow
@@ -14,6 +15,27 @@ import kotlinx.coroutines.test.runTest
 import org.junit.Test
 
 class EntryEditorViewModelTest {
+    @Test
+    fun saving_existing_photo_entry_without_new_selection_retains_existing_media() = runTest {
+        val id = UUID.randomUUID()
+        val existing = VaultEntry(
+            id = id,
+            title = "A photo note",
+            body = "A note with a photo.",
+            createdAt = Instant.parse("2026-08-26T09:00:00Z"),
+            updatedAt = Instant.parse("2026-08-26T10:00:00Z"),
+            tags = emptySet(),
+            media = listOf(app.respiral.core.model.VaultMedia("media/$id/0.jpg", "image/jpeg")),
+        )
+        val repository = RecordingVaultRepository(existing)
+        val viewModel = EntryEditorViewModel(repository, entryId = existing.id)
+
+        assertThat(viewModel.load()).isTrue()
+        assertThat(viewModel.save()).isTrue()
+        assertThat(repository.savedEntry?.media).isEqualTo(existing.media)
+        assertThat(repository.savedPendingMedia).isEmpty()
+    }
+
     @Test
     fun save_failure_keeps_the_draft_intact() = runTest {
         val viewModel = EntryEditorViewModel(FailingVaultRepository())
@@ -26,6 +48,25 @@ class EntryEditorViewModelTest {
         assertThat(viewModel.body).isEqualTo("I called a friend when it mattered.")
         assertThat(viewModel.tags).containsExactly(VaultTag.AFFIRMATION)
     }
+}
+
+private class RecordingVaultRepository(private val existing: VaultEntry) : VaultRepository {
+    var savedEntry: VaultEntry? = null
+    var savedPendingMedia: List<PendingMedia>? = null
+
+    override suspend fun save(entry: VaultEntry, pendingMedia: List<PendingMedia>): VaultEntry {
+        savedEntry = entry
+        savedPendingMedia = pendingMedia
+        return entry
+    }
+
+    override fun observeTimeline(query: String, tags: Set<VaultTag>): Flow<List<VaultEntrySummary>> = emptyFlow()
+
+    override suspend fun get(id: UUID): VaultEntry = existing
+
+    override suspend fun delete(id: UUID) = Unit
+
+    override suspend fun rebuildIndex() = Unit
 }
 
 private class FailingVaultRepository : VaultRepository {

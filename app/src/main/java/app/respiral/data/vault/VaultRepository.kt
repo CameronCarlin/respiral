@@ -11,6 +11,7 @@ import java.util.UUID
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
 
+/** A newly selected media item; it is appended to an entry's existing canonical media. */
 data class PendingMedia(val source: Uri, val mimeType: String)
 
 data class VaultEntrySummary(
@@ -21,6 +22,7 @@ data class VaultEntrySummary(
 )
 
 interface VaultRepository {
+    /** Saves text and retains [entry.media], appending any newly selected [pendingMedia]. */
     suspend fun save(entry: VaultEntry, pendingMedia: List<PendingMedia>): VaultEntry
 
     fun observeTimeline(query: String, tags: Set<VaultTag>): Flow<List<VaultEntrySummary>>

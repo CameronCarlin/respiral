@@ -69,6 +69,14 @@ class VaultFileStore {
 
     internal fun stage(entry: VaultEntry, pendingMedia: List<PendingMedia>): StagedEntry {
         ensureDirectory(entriesDirectory())
+        val existingMedia = entry.media
+        val newMediaNames = nextMediaFileNames(existingMedia, pendingMedia)
+        val newMedia = pendingMedia.mapIndexed { index, media ->
+            VaultMedia(
+                relativePath = "media/${entry.id}/${newMediaNames[index]}",
+                mimeType = media.mimeType,
+            )
+        }
         val persistedEntry = VaultEntry(
             id = entry.id,
             title = entry.title,
@@ -76,25 +84,32 @@ class VaultFileStore {
             createdAt = entry.createdAt,
             updatedAt = entry.updatedAt,
             tags = entry.tags,
-            media = pendingMedia.mapIndexed { index, media ->
-                VaultMedia("media/${entry.id}/$index${extensionFor(media.mimeType)}", media.mimeType)
-            },
+            media = existingMedia + newMedia,
         )
         val mediaDestination = mediaDirectory(entry.id)
         var mediaTemporary: File? = null
         var markdownTemporary: File? = null
 
         try {
-            if (pendingMedia.isNotEmpty()) {
-                ensureDirectory(mediaDestination.getParentFile()!!)
-                mediaTemporary = temporarySibling(mediaDestination)
-                ensureDirectory(mediaTemporary)
-                pendingMedia.forEachIndexed { index, media ->
-                    val temporary = mediaTemporary.resolve("$index${extensionFor(media.mimeType)}")
-                    openInputStream(media.source)?.use { input ->
-                        temporary.outputStream().buffered().use { output -> input.copyTo(output) }
-                    } ?: throw FileNotFoundException("Unable to open selected media: ${media.source}")
+            ensureDirectory(mediaDestination.getParentFile()!!)
+            mediaTemporary = temporarySibling(mediaDestination)
+            ensureDirectory(mediaTemporary)
+
+            existingMedia.forEach { media ->
+                val source = vaultRoot.resolve(media.relativePath)
+                if (source.exists()) {
+                    runCatching { source.relativeTo(mediaDestination) }.getOrNull()?.let { relativePath ->
+                        val destination = mediaTemporary.resolve(relativePath)
+                        ensureDirectory(destination.getParentFile()!!)
+                        source.copyTo(destination, overwrite = false)
+                    }
                 }
+            }
+            pendingMedia.forEachIndexed { index, media ->
+                val destination = mediaTemporary.resolve(newMediaNames[index])
+                openInputStream(media.source)?.use { input ->
+                    destination.outputStream().buffered().use { output -> input.copyTo(output) }
+                } ?: throw FileNotFoundException("Unable to open selected media: ${media.source}")
             }
 
             val markdownDestination = markdownFile(entry.id)
@@ -110,6 +125,23 @@ class VaultFileStore {
             mediaTemporary?.deleteRecursively()
             markdownTemporary?.delete()
             throw error
+        }
+    }
+
+    private fun nextMediaFileNames(
+        existingMedia: List<VaultMedia>,
+        pendingMedia: List<PendingMedia>,
+    ): List<String> {
+        val usedStems = existingMedia
+            .map { File(it.relativePath).nameWithoutExtension }
+            .toMutableSet()
+        var nextIndex = 0
+        return pendingMedia.map { media ->
+            while (nextIndex.toString() in usedStems) nextIndex += 1
+            val name = "$nextIndex${extensionFor(media.mimeType)}"
+            usedStems += nextIndex.toString()
+            nextIndex += 1
+            name
         }
     }
 
