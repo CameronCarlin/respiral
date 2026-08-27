@@ -3,8 +3,10 @@ package app.respiral.ui
 import android.content.Context
 import android.net.Uri
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.platform.LocalContext
@@ -38,23 +40,45 @@ private const val REFLECTION_ROUTE = "reflection?tags={tags}"
 private const val EDITOR_ROUTE = "editor?id={id}&prompt={prompt}&tags={tags}"
 
 @Composable
-fun AppNavGraph() {
+fun AppNavGraph(initialRoute: String? = null) {
     val context = LocalContext.current.applicationContext
     val repository = remember(context) { defaultVaultRepository(context) }
     val settingsRepository = remember(context) { RespiralApplication.from(context).settingsRepository }
-    AppNavGraph(repository, settingsRepository)
+    AppNavGraph(repository, settingsRepository, initialRoute)
 }
 
 @Composable
-internal fun AppNavGraph(repository: VaultRepository, settingsRepository: SettingsRepository) {
+internal fun AppNavGraph(
+    repository: VaultRepository,
+    settingsRepository: SettingsRepository,
+    initialRoute: String? = null,
+) {
     val settings by settingsRepository.settings.collectAsState(initial = null)
     val currentSettings = settings ?: return
     val navController = rememberNavController()
     val scope = rememberCoroutineScope()
 
+    val startDestination = when (initialRoute) {
+        "reflection" -> reflectionRoute()
+        "editor" -> editorRoute()
+        else -> if (currentSettings.onboardingSeen) ARRIVAL_ROUTE else WELCOME_ROUTE
+    }
+    val firstComposition = remember { mutableStateOf(true) }
+
+    LaunchedEffect(initialRoute) {
+        if (firstComposition.value) {
+            firstComposition.value = false
+        } else {
+            when (initialRoute) {
+                "reflection" -> navController.navigate(reflectionRoute())
+                "editor" -> navController.navigate(editorRoute())
+            }
+        }
+    }
+
     NavHost(
         navController = navController,
-        startDestination = if (currentSettings.onboardingSeen) ARRIVAL_ROUTE else WELCOME_ROUTE,
+        startDestination = startDestination,
     ) {
         composable(WELCOME_ROUTE) {
             WelcomeRitualScreen(
