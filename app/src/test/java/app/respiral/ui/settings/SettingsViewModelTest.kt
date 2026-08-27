@@ -4,6 +4,7 @@ import app.respiral.core.model.VaultSettings
 import app.respiral.data.settings.SettingsRepository
 import app.respiral.notifications.ReminderMode
 import app.respiral.notifications.ReminderScheduler
+import app.respiral.security.AuthenticationResult
 import com.google.common.truth.Truth.assertThat
 import java.time.LocalTime
 import kotlinx.coroutines.flow.Flow
@@ -40,6 +41,31 @@ class SettingsViewModelTest {
         assertThat(accepted).isFalse()
         assertThat(repository.settings.first().reminderTime).isNull()
         assertThat(viewModel.message).isEqualTo("Use a time such as 08:00.")
+        viewModel.close()
+    }
+
+    @Test
+    fun enabling_lock_does_not_persist_when_authentication_is_unavailable() = runTest {
+        val repository = FakeSettingsRepository()
+        val viewModel = SettingsViewModel(repository, RecordingScheduler(), this)
+
+        viewModel.setLockEnabled(true) { AuthenticationResult.Unavailable }
+        advanceUntilIdle()
+
+        assertThat(repository.settings.first().lockEnabled).isFalse()
+        assertThat(viewModel.message).isEqualTo("Locking is unavailable on this device.")
+        viewModel.close()
+    }
+
+    @Test
+    fun enabling_lock_persists_only_after_authentication_succeeds() = runTest {
+        val repository = FakeSettingsRepository()
+        val viewModel = SettingsViewModel(repository, RecordingScheduler(), this)
+
+        viewModel.setLockEnabled(true) { AuthenticationResult.Success }
+        advanceUntilIdle()
+
+        assertThat(repository.settings.first().lockEnabled).isTrue()
         viewModel.close()
     }
 }

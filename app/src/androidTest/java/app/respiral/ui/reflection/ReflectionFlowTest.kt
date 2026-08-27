@@ -8,6 +8,7 @@ import androidx.compose.ui.test.onAllNodesWithTag
 import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
+import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performTextInput
 import app.respiral.core.model.VaultEntry
 import app.respiral.core.model.VaultTag
@@ -16,6 +17,7 @@ import app.respiral.data.vault.VaultEntrySummary
 import app.respiral.data.vault.VaultRepository
 import app.respiral.ui.arrival.ArrivalScreen
 import app.respiral.ui.library.LibraryScreen
+import com.google.common.truth.Truth.assertThat
 import java.time.Instant
 import java.util.UUID
 import kotlinx.coroutines.flow.Flow
@@ -36,6 +38,18 @@ class ReflectionFlowTest {
 
         composeTestRule.onNodeWithText("Remind me who I am").assertIsDisplayed()
         composeTestRule.onNodeWithText("Add something good").assertIsDisplayed()
+    }
+
+    @Test
+    fun arrival_offers_a_route_to_browse_the_vault() {
+        var browsed = false
+        composeTestRule.setContent {
+            ArrivalScreen(onRemindMe = {}, onAddEntry = {}, onBrowse = { browsed = true })
+        }
+
+        composeTestRule.onNodeWithTag("browse-vault").performClick()
+
+        assertThat(browsed).isTrue()
     }
 
     @Test

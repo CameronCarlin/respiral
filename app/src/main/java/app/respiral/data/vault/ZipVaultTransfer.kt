@@ -12,6 +12,8 @@ import java.util.UUID
 import java.util.zip.ZipEntry
 import java.util.zip.ZipInputStream
 import java.util.zip.ZipOutputStream
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import org.json.JSONException
 import org.json.JSONObject
 
@@ -22,7 +24,7 @@ class ZipVaultTransfer(
     private val cacheDirectory: File,
     private val codec: MarkdownEntryCodec = app.respiral.core.markdown.CanonicalMarkdownEntryCodec(),
 ) {
-    suspend fun export(destination: OutputStream): ExportResult {
+    suspend fun export(destination: OutputStream): ExportResult = withContext(Dispatchers.IO) {
         val entries = fileStore.readAll().sortedBy { it.id.toString() }
         val mediaCount = entries.sumOf { it.media.size }
         destination.use { output ->
@@ -45,12 +47,12 @@ class ZipVaultTransfer(
                 }
             }
         }
-        return ExportResult(entries.size, mediaCount)
+        ExportResult(entries.size, mediaCount)
     }
 
-    suspend fun preview(source: InputStream): ImportPreview {
+    suspend fun preview(source: InputStream): ImportPreview = withContext(Dispatchers.IO) {
         val archive = readArchive(source)
-        return try {
+        try {
             ImportPreview(
                 entryCount = archive.entries.size,
                 mediaCount = archive.mediaCount,
@@ -61,9 +63,9 @@ class ZipVaultTransfer(
         }
     }
 
-    suspend fun apply(source: InputStream, mode: ImportMode): ImportResult {
+    suspend fun apply(source: InputStream, mode: ImportMode): ImportResult = withContext(Dispatchers.IO) {
         val archive = readArchive(source)
-        return try {
+        try {
             val importedIds = repository.applyImportedVault(archive.root, archive.entries, mode)
             ImportResult(
                 mode = mode,

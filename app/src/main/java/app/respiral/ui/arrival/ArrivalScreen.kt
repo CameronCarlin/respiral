@@ -13,6 +13,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
 
 /** The intentionally small first choice shown after onboarding. */
@@ -20,6 +21,7 @@ import androidx.compose.ui.unit.dp
 fun ArrivalScreen(
     onRemindMe: () -> Unit,
     onAddEntry: () -> Unit,
+    onBrowse: () -> Unit = {},
     onSettings: () -> Unit = {},
 ) {
     Surface(modifier = Modifier.fillMaxSize()) {
@@ -41,6 +43,10 @@ fun ArrivalScreen(
             Button(modifier = Modifier.fillMaxWidth(), onClick = onAddEntry) {
                 Text("Add something good")
             }
+            TextButton(
+                modifier = Modifier.testTag("browse-vault"),
+                onClick = onBrowse,
+            ) { Text("Browse your vault") }
             TextButton(onClick = onSettings) { Text("Settings") }
         }
     }

@@ -39,6 +39,7 @@ fun SettingsScreen(
     onDismissImportPreview: () -> Unit = {},
     onApplyImport: (ImportMode) -> Unit = {},
     feedbackMessage: String? = null,
+    onLockEnabledChange: ((Boolean) -> Unit)? = null,
 ) {
     val settings = viewModel.settings
     Surface(modifier = Modifier.fillMaxSize()) {
@@ -60,7 +61,7 @@ fun SettingsScreen(
                     title = "Lock my vault",
                     description = "Use your fingerprint or device passcode when you return.",
                     checked = settings.lockEnabled,
-                    onCheckedChange = viewModel::setLockEnabled,
+                    onCheckedChange = onLockEnabledChange ?: { enabled -> viewModel.setLockEnabled(enabled) },
                     tag = "lock-vault",
                 )
             }

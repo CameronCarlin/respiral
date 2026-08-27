@@ -7,6 +7,7 @@ import app.respiral.core.model.VaultSettings
 import app.respiral.data.settings.SettingsRepository
 import app.respiral.notifications.ReminderMode
 import app.respiral.notifications.ReminderScheduler
+import app.respiral.security.AuthenticationResult
 import java.time.LocalTime
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
@@ -28,7 +29,19 @@ class SettingsViewModel(
         repository.settings.collectLatest { settings = it }
     }
 
-    fun setLockEnabled(enabled: Boolean) = update { copy(lockEnabled = enabled) }
+    fun setLockEnabled(enabled: Boolean, preflight: (suspend () -> AuthenticationResult)? = null) {
+        if (!enabled || preflight == null) {
+            update { copy(lockEnabled = enabled) }
+            return
+        }
+        scope.launch {
+            when (preflight()) {
+                AuthenticationResult.Success -> update { copy(lockEnabled = true) }
+                AuthenticationResult.Cancelled -> message = "Locking was cancelled. Your vault remains unlocked."
+                AuthenticationResult.Unavailable -> message = "Locking is unavailable on this device."
+            }
+        }
+    }
 
     fun setRevealNotificationText(enabled: Boolean) = update {
         copy(revealNotificationText = enabled)

@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -19,7 +20,13 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.input.pointer.changedToUp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
 import androidx.navigation.NavType
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
@@ -189,7 +196,14 @@ internal fun AppNavGraph(
             }
         }
         composable(ARRIVAL_ROUTE) {
-            Guard { ArrivalScreen({ navController.navigate(reflectionRoute()) }, { navController.navigate(editorRoute()) }, { navController.navigate(SETTINGS_ROUTE) }) }
+            Guard {
+                ArrivalScreen(
+                    onRemindMe = { navController.navigate(reflectionRoute()) },
+                    onAddEntry = { navController.navigate(editorRoute()) },
+                    onBrowse = { navController.navigate(LIBRARY_ROUTE) },
+                    onSettings = { navController.navigate(SETTINGS_ROUTE) },
+                )
+            }
         }
         composable(LIBRARY_ROUTE) {
             Guard { LibraryScreen(repository, { navController.navigate(editorRoute(id = it.id)) }, { navController.navigate(reflectionRoute(it)) }, { navController.popBackStack() }) }
@@ -219,6 +233,18 @@ internal fun AppNavGraph(
                         }
                     },
                     feedbackMessage = transferMessage,
+                    onLockEnabledChange = { enabled ->
+                        viewModel.setLockEnabled(enabled) {
+                            when (val result = activity?.let { authenticator.authenticate(it) }
+                                ?: AuthenticationResult.Unavailable) {
+                                AuthenticationResult.Success -> {
+                                    session.unlock(SystemClock.now())
+                                    result
+                                }
+                                else -> result
+                            }
+                        }
+                    },
                 )
             }
         }
@@ -227,15 +253,40 @@ internal fun AppNavGraph(
 
 @Composable
 private fun VaultGuard(lockEnabled: Boolean, session: VaultSession, keyguard: KeyguardManager?, authenticationMessage: String?, authenticating: Boolean, onAuthenticate: () -> Unit, version: Int, content: @Composable () -> Unit) {
-    var allowed by remember(lockEnabled, version) { mutableStateOf((!lockEnabled || session.isUnlocked(SystemClock.now())) && keyguard?.isDeviceLocked != true) }
-    LaunchedEffect(lockEnabled, version) {
+    val sessionVersion by session.changes.collectAsState(initial = 0L)
+    val lifecycleOwner = LocalLifecycleOwner.current
+    var allowed by remember(lockEnabled, version, sessionVersion) { mutableStateOf((!lockEnabled || session.isUnlocked(SystemClock.now())) && keyguard?.isDeviceLocked != true) }
+    DisposableEffect(lifecycleOwner, session) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) session.touch(SystemClock.now())
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+    LaunchedEffect(lockEnabled, version, sessionVersion) {
         while (lockEnabled) {
             allowed = keyguard?.isDeviceLocked != true && session.isUnlocked(SystemClock.now())
             delay(1_000)
         }
         allowed = true
     }
-    if (!lockEnabled || allowed) Box(Modifier.fillMaxSize().testTag("private-route")) { content() }
+    if (!lockEnabled || allowed) {
+        Box(
+            Modifier
+                .fillMaxSize()
+                .testTag("private-route")
+                .pointerInput(session) {
+                    awaitPointerEventScope {
+                        while (true) {
+                            val event = awaitPointerEvent(PointerEventPass.Initial)
+                            if (event.changes.any { it.pressed || it.changedToUp() }) {
+                                session.touch(SystemClock.now())
+                            }
+                        }
+                    }
+                },
+        ) { content() }
+    }
     else LockedVaultScreen(onAuthenticate, authenticating, authenticationMessage)
 }
 

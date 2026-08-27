@@ -3,8 +3,14 @@ package app.respiral.security
 import app.respiral.core.time.Clock
 import java.time.Duration
 import java.time.Instant
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableStateFlow
 
 interface VaultSession {
+    /** Monotonic state changes let private-route guards react immediately to lock events. */
+    val changes: Flow<Long>
+        get() = kotlinx.coroutines.flow.flowOf(0L)
+
     fun unlock(now: Instant)
 
     fun touch(now: Instant)
@@ -19,17 +25,25 @@ class DefaultVaultSession(
     private val clock: Clock,
 ) : VaultSession {
     private var lastActivity: Instant? = null
+    private val changeVersion = MutableStateFlow(0L)
+
+    override val changes: Flow<Long> = changeVersion
 
     override fun unlock(now: Instant) {
         lastActivity = now
+        changeVersion.value += 1
     }
 
     override fun touch(now: Instant) {
-        if (isUnlocked(now)) lastActivity = now
+        if (isUnlocked(now)) {
+            lastActivity = now
+            changeVersion.value += 1
+        }
     }
 
     override fun lock() {
         lastActivity = null
+        changeVersion.value += 1
     }
 
     override fun isUnlocked(now: Instant): Boolean {

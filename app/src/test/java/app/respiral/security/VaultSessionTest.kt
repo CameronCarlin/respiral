@@ -3,6 +3,8 @@ package app.respiral.security
 import app.respiral.core.time.Clock
 import com.google.common.truth.Truth.assertThat
 import java.time.Instant
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.test.runTest
 import org.junit.Test
 
 class VaultSessionTest {
@@ -54,6 +56,17 @@ class VaultSessionTest {
         clock.current = instant("2026-08-26T08:05:00Z")
 
         assertThat(session.isUnlocked()).isFalse()
+    }
+
+    @Test
+    fun session_changes_are_observable_when_it_is_unlocked_or_locked() = runTest {
+        val initial = session.changes.first()
+
+        session.unlock(instant("2026-08-26T08:00:00Z"))
+        assertThat(session.changes.first()).isEqualTo(initial + 1)
+
+        session.lock()
+        assertThat(session.changes.first()).isEqualTo(initial + 2)
     }
 
     private fun instant(value: String): Instant = Instant.parse(value)
