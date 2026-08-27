@@ -7,6 +7,7 @@ import app.respiral.core.model.VaultEntry
 import app.respiral.core.model.VaultTag
 import app.respiral.data.vault.VaultEntrySummary
 import app.respiral.data.vault.VaultRepository
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.first
 
 /** Selects a locally indexed vault entry without recording or ranking the selection. */
@@ -39,6 +40,8 @@ class ReflectionViewModel(
                 message = null
                 true
             }
+        } catch (cancellation: CancellationException) {
+            throw cancellation
         } catch (_: Throwable) {
             entry = null
             message = "This note couldn't be opened right now. Your vault stays private on this device."

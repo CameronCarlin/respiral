@@ -8,7 +8,9 @@ import app.respiral.data.vault.VaultRepository
 import com.google.common.truth.Truth.assertThat
 import java.time.Instant
 import java.util.UUID
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.test.runTest
 import org.junit.Test
@@ -25,15 +27,36 @@ class ReflectionViewModelTest {
         assertThat(viewModel.entry?.title).isEqualTo("Affirmation")
         assertThat(repository.requestedTags).isEqualTo(setOf(VaultTag.AFFIRMATION))
     }
+
+    @Test
+    fun next_entry_rethrows_cancellation_instead_of_turning_it_into_an_error_message() = runTest {
+        val cancellation = CancellationException("test cancellation")
+        val repository = ReflectionRepository(emptyList(), cancellation)
+        val viewModel = ReflectionViewModel(repository, emptySet())
+
+        try {
+            viewModel.nextEntry()
+            throw AssertionError("Expected cancellation to be rethrown")
+        } catch (actual: CancellationException) {
+            assertThat(actual).isSameInstanceAs(cancellation)
+        }
+
+        assertThat(viewModel.isLoading).isFalse()
+        assertThat(viewModel.message).isNull()
+    }
 }
 
-private class ReflectionRepository(private val entries: List<VaultEntry>) : VaultRepository {
+private class ReflectionRepository(
+    private val entries: List<VaultEntry>,
+    private val observeFailure: CancellationException? = null,
+) : VaultRepository {
     var requestedTags: Set<VaultTag>? = null
 
     override suspend fun save(entry: VaultEntry, pendingMedia: List<PendingMedia>): VaultEntry = entry
 
     override fun observeTimeline(query: String, tags: Set<VaultTag>): Flow<List<VaultEntrySummary>> {
         requestedTags = tags
+        observeFailure?.let { failure -> return flow { throw failure } }
         return flowOf(entries.map { entry -> VaultEntrySummary(entry.id, entry.title, entry.createdAt, entry.tags) })
     }
 

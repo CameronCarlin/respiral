@@ -94,7 +94,9 @@ internal fun AppNavGraph(repository: VaultRepository, settingsRepository: Settin
                     scope.launch {
                         markOnboardingSeen(settingsRepository)
                         navController.navigate(LIBRARY_ROUTE) {
-                            popUpTo(ARRIVAL_ROUTE) { inclusive = false }
+                            // Saving is a terminal action for the capture flow. Remove the
+                            // welcome/editor routes so Back cannot reopen a stale draft.
+                            popUpTo(navController.graph.startDestinationId) { inclusive = true }
                         }
                     }
                 },
