@@ -22,6 +22,7 @@ class SettingsRepositoryTest {
             ),
         )
         val expected = VaultSettings(
+            onboardingSeen = true,
             lockEnabled = true,
             reminderModes = setOf(ReminderMode.SAVED_ENTRY, ReminderMode.PRIVATE_NUDGE),
             reminderTime = LocalTime.of(8, 30),
