@@ -2,24 +2,12 @@ package app.respiral.ui
 
 import android.content.Context
 import android.net.Uri
-import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.padding
-import androidx.compose.material3.Button
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Surface
-import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
-import androidx.compose.ui.Alignment
-import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.unit.dp
 import androidx.navigation.NavType
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
@@ -33,15 +21,20 @@ import app.respiral.data.settings.SettingsRepository
 import app.respiral.data.vault.DefaultVaultRepository
 import app.respiral.data.vault.VaultFileStore
 import app.respiral.data.vault.VaultRepository
+import app.respiral.ui.arrival.ArrivalScreen
 import app.respiral.ui.capture.EntryEditorScreen
+import app.respiral.ui.library.LibraryScreen
 import app.respiral.ui.onboarding.WelcomePrompt
 import app.respiral.ui.onboarding.WelcomeRitualScreen
+import app.respiral.ui.reflection.ReflectionScreen
 import java.util.UUID
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 
 private const val WELCOME_ROUTE = "welcome"
 private const val ARRIVAL_ROUTE = "arrival"
+private const val LIBRARY_ROUTE = "library"
+private const val REFLECTION_ROUTE = "reflection?tags={tags}"
 private const val EDITOR_ROUTE = "editor?id={id}&prompt={prompt}&tags={tags}"
 
 @Composable
@@ -100,20 +93,41 @@ internal fun AppNavGraph(repository: VaultRepository, settingsRepository: Settin
                 onSaved = {
                     scope.launch {
                         markOnboardingSeen(settingsRepository)
-                        navController.navigate(ARRIVAL_ROUTE) {
-                            popUpTo(ARRIVAL_ROUTE) { inclusive = true }
+                        navController.navigate(LIBRARY_ROUTE) {
+                            popUpTo(ARRIVAL_ROUTE) { inclusive = false }
                         }
                     }
                 },
                 onDeleted = {
-                    navController.navigate(ARRIVAL_ROUTE) {
-                        popUpTo(ARRIVAL_ROUTE) { inclusive = true }
+                    navController.navigate(LIBRARY_ROUTE) {
+                        popUpTo(LIBRARY_ROUTE) { inclusive = true }
                     }
                 },
             )
         }
         composable(ARRIVAL_ROUTE) {
-            ArrivalScreen(repository = repository, onAddEntry = { navController.navigate(editorRoute()) })
+            ArrivalScreen(
+                onRemindMe = { navController.navigate(reflectionRoute()) },
+                onAddEntry = { navController.navigate(editorRoute()) },
+            )
+        }
+        composable(LIBRARY_ROUTE) {
+            LibraryScreen(
+                repository = repository,
+                onEntrySelected = { entry -> navController.navigate(editorRoute(id = entry.id)) },
+                onReflect = { tags -> navController.navigate(reflectionRoute(tags)) },
+                onBack = { navController.popBackStack() },
+            )
+        }
+        composable(
+            route = REFLECTION_ROUTE,
+            arguments = listOf(navArgument("tags") { type = NavType.StringType; defaultValue = "" }),
+        ) { backStackEntry ->
+            ReflectionScreen(
+                repository = repository,
+                tags = parseTags(backStackEntry.arguments?.getString("tags").orEmpty()),
+                onBack = { navController.popBackStack() },
+            )
         }
     }
 }
@@ -123,34 +137,26 @@ private suspend fun markOnboardingSeen(settingsRepository: SettingsRepository) {
     if (!settings.onboardingSeen) settingsRepository.update(settings.copy(onboardingSeen = true))
 }
 
-private fun editorRoute(id: UUID? = null, prompt: WelcomePrompt? = null): String = buildString {
+private fun editorRoute(id: UUID? = null, prompt: WelcomePrompt? = null, tags: Set<VaultTag> = emptySet()): String = buildString {
     append("editor?id=")
     append(id?.toString().orEmpty())
     append("&prompt=")
     append(Uri.encode(prompt?.prompt.orEmpty()))
     append("&tags=")
+    append(tags.sortedBy(VaultTag::ordinal).joinToString(",") { it.name })
 }
+
+private fun reflectionRoute(tags: Set<VaultTag> = emptySet()): String = buildString {
+    append("reflection?tags=")
+    append(tags.sortedBy(VaultTag::ordinal).joinToString(",") { it.name })
+}
+
+private fun parseTags(tags: String): Set<VaultTag> = tags
+    .split(',')
+    .mapNotNull { runCatching { VaultTag.valueOf(it) }.getOrNull() }
+    .toSet()
 
 private fun defaultVaultRepository(context: Context): VaultRepository = DefaultVaultRepository(
     VaultFileStore(context, CanonicalMarkdownEntryCodec()),
     RespiralDatabase.create(context),
 )
-
-@Composable
-private fun ArrivalScreen(repository: VaultRepository, onAddEntry: () -> Unit) {
-    val entries by repository.observeTimeline(query = "", tags = emptySet()).collectAsState(initial = emptyList())
-    Surface(modifier = Modifier.fillMaxSize()) {
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(24.dp),
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.spacedBy(16.dp, Alignment.CenterVertically),
-        ) {
-            Text(text = "Respiral", style = MaterialTheme.typography.displaySmall)
-            Button(modifier = Modifier.fillMaxWidth(), onClick = {}) { Text("Remind me who I am") }
-            Button(modifier = Modifier.fillMaxWidth(), onClick = onAddEntry) { Text("Add something good") }
-            entries.forEach { entry -> Text(entry.title, style = MaterialTheme.typography.titleMedium) }
-        }
-    }
-}
