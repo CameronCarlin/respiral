@@ -84,7 +84,10 @@ fun LibraryScreen(
                 }
                 Text(emptyMessage, style = MaterialTheme.typography.bodyLarge)
             } else {
-                LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                LazyColumn(
+                    modifier = Modifier.weight(1f),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
                     items(entries, key = { it.id }) { entry ->
                         TimelineEntry(entry = entry, onClick = { onEntrySelected(entry) })
                     }
