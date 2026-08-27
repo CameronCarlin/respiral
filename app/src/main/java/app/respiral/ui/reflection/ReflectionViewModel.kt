@@ -26,7 +26,13 @@ class ReflectionViewModel(
     suspend fun nextEntry(): Boolean {
         isLoading = true
         return try {
-            val summaries = repository.observeTimeline(query = "", tags = activeTags).first()
+            var summaries = repository.observeTimeline(query = "", tags = activeTags).first()
+            // Room is only a rebuildable projection; recover once from the canonical Markdown
+            // vault when a fresh install or interrupted write left the projection empty.
+            if (summaries.isEmpty()) {
+                repository.rebuildIndex()
+                summaries = repository.observeTimeline(query = "", tags = activeTags).first()
+            }
             val matches = summaries.filter { summary ->
                 activeTags.isEmpty() || summary.tags.any(activeTags::contains)
             }

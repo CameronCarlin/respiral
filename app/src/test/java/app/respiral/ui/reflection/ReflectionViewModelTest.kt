@@ -44,6 +44,30 @@ class ReflectionViewModelTest {
         assertThat(viewModel.isLoading).isFalse()
         assertThat(viewModel.message).isNull()
     }
+
+    @Test
+    fun empty_index_is_rebuilt_before_reporting_that_the_vault_is_empty() = runTest {
+        val saved = entry("Saved note", setOf(VaultTag.AFFIRMATION))
+        val repository = RebuildingReflectionRepository(saved)
+        val viewModel = ReflectionViewModel(repository, emptySet()) { candidates -> candidates.first() }
+
+        assertThat(viewModel.nextEntry()).isTrue()
+        assertThat(viewModel.entry?.title).isEqualTo("Saved note")
+        assertThat(repository.rebuildCalls).isEqualTo(1)
+    }
+}
+
+private class RebuildingReflectionRepository(private val saved: VaultEntry) : VaultRepository {
+    var rebuilt = false
+    var rebuildCalls = 0
+
+    override suspend fun save(entry: VaultEntry, pendingMedia: List<PendingMedia>): VaultEntry = entry
+    override fun observeTimeline(query: String, tags: Set<VaultTag>): Flow<List<VaultEntrySummary>> = flowOf(
+        if (rebuilt) listOf(VaultEntrySummary(saved.id, saved.title, saved.createdAt, saved.tags)) else emptyList(),
+    )
+    override suspend fun get(id: UUID): VaultEntry = saved
+    override suspend fun delete(id: UUID) = Unit
+    override suspend fun rebuildIndex() { rebuilt = true; rebuildCalls += 1 }
 }
 
 private class ReflectionRepository(
