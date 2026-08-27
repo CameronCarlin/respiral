@@ -33,6 +33,9 @@ class VaultFileStore {
         this.openInputStream = openInputStream
     }
 
+    internal val rootDirectory: File
+        get() = vaultRoot
+
     fun read(id: UUID): VaultEntry = codec.decode(markdownFile(id).readText(Charsets.UTF_8))
 
     fun readAll(): List<VaultEntry> {
@@ -179,6 +182,57 @@ class VaultFileStore {
         }
     }
 
+    /** Copies validated entries into this vault and records paths so the caller can roll back. */
+    internal fun merge(stagedRoot: File, ids: Set<UUID>): StagedMerge {
+        ensureDirectory(vaultRoot)
+        val copied = mutableListOf<File>()
+        try {
+            ids.sortedBy(UUID::toString).forEach { id ->
+                val stagedMarkdown = stagedRoot.resolve("entries/$id.md")
+                if (!stagedMarkdown.isFile) throw IOException("Imported entry Markdown is missing")
+                val markdownDestination = markdownFile(id)
+                if (markdownDestination.exists()) throw IOException("Imported entry already exists")
+                ensureDirectory(markdownDestination.parentFile!!)
+                val markdownTemporary = temporarySibling(markdownDestination)
+                stagedMarkdown.copyTo(markdownTemporary, overwrite = false)
+                move(markdownTemporary, markdownDestination)
+                copied += markdownDestination
+
+                val stagedMedia = stagedRoot.resolve("media/$id")
+                if (stagedMedia.exists()) {
+                    if (!stagedMedia.isDirectory) throw IOException("Imported media directory is invalid")
+                    val mediaDestination = mediaDirectory(id)
+                    if (mediaDestination.exists()) throw IOException("Imported media already exists")
+                    copied += mediaDestination
+                    stagedMedia.copyRecursively(mediaDestination, overwrite = false)
+                }
+            }
+            return StagedMerge(copied)
+        } catch (error: Throwable) {
+            copied.asReversed().forEach(File::deleteRecursively)
+            throw error
+        }
+    }
+
+    /** Swaps a staged vault root into place. The returned handle controls commit/rollback. */
+    internal fun replaceRoot(stagedRoot: File): StagedReplacement {
+        ensureDirectory(vaultRoot.parentFile!!)
+        if (!stagedRoot.isDirectory) throw IOException("Imported vault directory is missing")
+        val backup = vaultRoot.takeIf(File::exists)?.let {
+            it.resolveSibling("${it.name}.backup-${UUID.randomUUID()}")
+        }
+        try {
+            backup?.let { move(vaultRoot, it) }
+            move(stagedRoot, vaultRoot)
+            return StagedReplacement(vaultRoot, backup)
+        } catch (error: Throwable) {
+            backup?.let {
+                if (it.exists() && !vaultRoot.exists()) move(it, vaultRoot)
+            }
+            throw error
+        }
+    }
+
     internal class StagedEntry(
         val entry: VaultEntry,
         val markdownTemporary: File,
@@ -220,6 +274,32 @@ class VaultFileStore {
 
         fun restore() {
             paths.asReversed().forEach(MovedPath::restore)
+        }
+    }
+
+    internal class StagedMerge(private val copied: List<File>) {
+        fun complete() = Unit
+
+        fun restore() {
+            copied.asReversed().forEach(File::deleteRecursively)
+        }
+    }
+
+    internal class StagedReplacement(
+        private val activeRoot: File,
+        private val backup: File?,
+    ) {
+        fun complete() {
+            backup?.deleteRecursively()
+        }
+
+        fun restore() {
+            activeRoot.deleteRecursively()
+            backup?.let { backupRoot ->
+                if (!backupRoot.renameTo(activeRoot)) {
+                    throw IOException("Unable to restore private vault")
+                }
+            }
         }
     }
 

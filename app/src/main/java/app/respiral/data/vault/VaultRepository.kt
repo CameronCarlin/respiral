@@ -6,6 +6,7 @@ import app.respiral.core.model.VaultEntry
 import app.respiral.core.model.VaultTag
 import app.respiral.data.index.EntryIndexEntity
 import app.respiral.data.index.RespiralDatabase
+import java.io.File
 import java.time.Instant
 import java.util.UUID
 import kotlinx.coroutines.flow.Flow
@@ -32,6 +33,16 @@ interface VaultRepository {
     suspend fun delete(id: UUID)
 
     suspend fun rebuildIndex()
+
+    /**
+     * Applies a fully validated, private vault directory. Transfer code is the only caller; the
+     * default keeps lightweight repository fakes useful for presentation tests.
+     */
+    suspend fun applyImportedVault(
+        stagedVault: File,
+        entries: List<VaultEntry>,
+        mode: ImportMode,
+    ): Set<UUID> = throw UnsupportedOperationException("Vault import is unavailable")
 }
 
 class DefaultVaultRepository private constructor(
@@ -96,6 +107,48 @@ class DefaultVaultRepository private constructor(
         database.withTransaction {
             indexDao.clear()
             entries.forEach { indexDao.upsert(it.toIndexEntity()) }
+        }
+    }
+
+    override suspend fun applyImportedVault(
+        stagedVault: File,
+        entries: List<VaultEntry>,
+        mode: ImportMode,
+    ): Set<UUID> = when (mode) {
+        ImportMode.MERGE -> {
+            val localIds = fileStore.readAll().mapTo(mutableSetOf()) { it.id }
+            val toImport = entries.filterNot { it.id in localIds }
+            val merged = fileStore.merge(stagedVault, toImport.map { it.id }.toSet())
+            try {
+                rebuildIndex()
+                merged.complete()
+                toImport.mapTo(mutableSetOf()) { it.id }
+            } catch (error: Throwable) {
+                try {
+                    merged.restore()
+                    rebuildIndex()
+                } catch (restoreError: Throwable) {
+                    error.addSuppressed(restoreError)
+                }
+                throw error
+            }
+        }
+
+        ImportMode.REPLACE -> {
+            val replacement = fileStore.replaceRoot(stagedVault)
+            try {
+                rebuildIndex()
+                replacement.complete()
+                entries.mapTo(mutableSetOf()) { it.id }
+            } catch (error: Throwable) {
+                try {
+                    replacement.restore()
+                    rebuildIndex()
+                } catch (restoreError: Throwable) {
+                    error.addSuppressed(restoreError)
+                }
+                throw error
+            }
         }
     }
 }
