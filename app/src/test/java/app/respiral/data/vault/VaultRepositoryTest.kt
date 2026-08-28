@@ -10,9 +10,16 @@ import com.google.common.truth.Truth.assertThat
 import java.io.File
 import java.io.InputStream
 import java.io.IOException
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicInteger
 import kotlin.io.path.createTempDirectory
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.withContext
 import org.junit.After
 import org.junit.Before
 import org.junit.Test
@@ -277,6 +284,173 @@ class VaultRepositoryTest {
     }
 
     @Test
+    fun merge_on_fresh_repository_keeps_existing_canonical_entry_for_same_id() = runTest {
+        val local = sampleEntry(title = "Canonical local")
+        val imported = local.copy(title = "Imported collision")
+        fileStore.write(local)
+        val freshRepository = DefaultVaultRepository(fileStore)
+        val stagedVault = stagedVault(imported)
+
+        try {
+            val importedIds = freshRepository.applyImportedVault(
+                stagedVault,
+                listOf(imported),
+                ImportMode.MERGE,
+            )
+
+            assertThat(importedIds).isEmpty()
+            assertThat(fileStore.read(local.id).title).isEqualTo("Canonical local")
+            assertThat(freshRepository.get(local.id).title).isEqualTo("Canonical local")
+        } finally {
+            stagedVault.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun delete_projection_failure_restores_canonical_files_and_projection() = runTest {
+        val original = repository.save(sampleEntry(title = "Keep after delete"), listOf(pendingJpeg))
+        val originalMarkdown = entryDirectory.resolve("${original.id}.md").readBytes()
+        val originalMedia = vaultRoot.resolve("media/${original.id}/0.jpg").readBytes()
+        val failingRepository = DefaultVaultRepository.withMutationHooks(
+            fileStore = fileStore,
+            afterDeleteProjectionUpdate = { throw IOException("delete projection failed") },
+        )
+        failingRepository.refresh()
+
+        val failure = runCatching { failingRepository.delete(original.id) }.exceptionOrNull()
+
+        assertThat(failure).isInstanceOf(IOException::class.java)
+        assertThat(entryDirectory.resolve("${original.id}.md").readBytes()).isEqualTo(originalMarkdown)
+        assertThat(vaultRoot.resolve("media/${original.id}/0.jpg").readBytes()).isEqualTo(originalMedia)
+        assertThat(failingRepository.get(original.id)).isEqualTo(original)
+        assertThat(failingRepository.observeTimeline("", emptySet()).first().single().title)
+            .isEqualTo("Keep after delete")
+        assertThat(vaultRoot.walk().none { it.name.contains("deleting-") }).isTrue()
+    }
+
+    @Test
+    fun merge_refresh_failure_restores_canonical_files_and_projection() = runTest {
+        val local = repository.save(sampleEntry(title = "Keep after merge"), listOf(pendingJpeg))
+        val importedId = java.util.UUID.fromString("123e4567-e89b-12d3-a456-426614174011")
+        val imported = sampleEntry(
+            id = importedId,
+            title = "Rejected merge",
+            media = listOf(VaultMedia("media/$importedId/imported.jpg", "image/jpeg")),
+        )
+        val localMarkdown = entryDirectory.resolve("${local.id}.md").readBytes()
+        val stagedVault = stagedVault(imported)
+        var failRefresh = false
+        val failingRepository = DefaultVaultRepository.withMutationHooks(
+            fileStore = fileStore,
+            afterRefreshProjectionUpdate = {
+                if (failRefresh) throw IOException("merge refresh failed")
+            },
+        )
+        failingRepository.refresh()
+        failRefresh = true
+
+        try {
+            val failure = runCatching {
+                failingRepository.applyImportedVault(stagedVault, listOf(imported), ImportMode.MERGE)
+            }.exceptionOrNull()
+
+            assertThat(failure).isInstanceOf(IOException::class.java)
+            assertThat(entryDirectory.resolve("${local.id}.md").readBytes()).isEqualTo(localMarkdown)
+            assertThat(entryDirectory.resolve("${imported.id}.md").exists()).isFalse()
+            assertThat(vaultRoot.resolve("media/${imported.id}/imported.jpg").exists()).isFalse()
+            assertThat(failingRepository.get(local.id)).isEqualTo(local)
+            assertThat(failingRepository.observeTimeline("", emptySet()).first().map { it.title })
+                .containsExactly("Keep after merge")
+            assertThat(failingRepository.health.value).isEqualTo(VaultHealth.Healthy)
+        } finally {
+            stagedVault.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun replacement_refresh_failure_restores_canonical_files_and_projection() = runTest {
+        val local = repository.save(sampleEntry(title = "Keep after replacement"), listOf(pendingJpeg))
+        val importedId = java.util.UUID.fromString("123e4567-e89b-12d3-a456-426614174012")
+        val imported = sampleEntry(
+            id = importedId,
+            title = "Rejected replacement",
+            media = listOf(VaultMedia("media/$importedId/imported.jpg", "image/jpeg")),
+        )
+        val localMarkdown = entryDirectory.resolve("${local.id}.md").readBytes()
+        val localMedia = vaultRoot.resolve("media/${local.id}/0.jpg").readBytes()
+        val stagedVault = stagedVault(imported)
+        var failRefresh = false
+        val failingRepository = DefaultVaultRepository.withMutationHooks(
+            fileStore = fileStore,
+            afterRefreshProjectionUpdate = {
+                if (failRefresh) throw IOException("replacement refresh failed")
+            },
+        )
+        failingRepository.refresh()
+        failRefresh = true
+
+        try {
+            val failure = runCatching {
+                failingRepository.applyImportedVault(stagedVault, listOf(imported), ImportMode.REPLACE)
+            }.exceptionOrNull()
+
+            assertThat(failure).isInstanceOf(IOException::class.java)
+            assertThat(entryDirectory.resolve("${local.id}.md").readBytes()).isEqualTo(localMarkdown)
+            assertThat(vaultRoot.resolve("media/${local.id}/0.jpg").readBytes()).isEqualTo(localMedia)
+            assertThat(entryDirectory.resolve("${imported.id}.md").exists()).isFalse()
+            assertThat(vaultRoot.resolve("media/${imported.id}/imported.jpg").exists()).isFalse()
+            assertThat(failingRepository.get(local.id)).isEqualTo(local)
+            assertThat(failingRepository.observeTimeline("", emptySet()).first().map { it.title })
+                .containsExactly("Keep after replacement")
+            assertThat(failingRepository.health.value).isEqualTo(VaultHealth.Healthy)
+        } finally {
+            stagedVault.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun concurrent_saves_are_serialized_until_file_and_projection_transaction_completes() = runTest {
+        val firstProjectionUpdated = CompletableDeferred<Unit>()
+        val secondProjectionUpdated = CountDownLatch(1)
+        val releaseFirstSave = CompletableDeferred<Unit>()
+        val saveUpdateCount = AtomicInteger()
+        val serializedRepository = DefaultVaultRepository.withMutationHooks(
+            fileStore = fileStore,
+            afterSaveProjectionUpdate = {
+                when (saveUpdateCount.incrementAndGet()) {
+                    1 -> {
+                        firstProjectionUpdated.complete(Unit)
+                        releaseFirstSave.await()
+                    }
+
+                    2 -> secondProjectionUpdated.countDown()
+                }
+            },
+        )
+        val first = sampleEntry(title = "First serialized")
+        val second = sampleEntry(
+            id = java.util.UUID.fromString("123e4567-e89b-12d3-a456-426614174013"),
+            title = "Second serialized",
+        )
+
+        val firstSave = async { serializedRepository.save(first, emptyList()) }
+        firstProjectionUpdated.await()
+        val secondSave = async { serializedRepository.save(second, emptyList()) }
+        val secondUpdatedWhileFirstHeld = withContext(Dispatchers.IO) {
+            secondProjectionUpdated.await(1, TimeUnit.SECONDS)
+        }
+
+        releaseFirstSave.complete(Unit)
+        firstSave.await()
+        secondSave.await()
+        assertThat(secondUpdatedWhileFirstHeld).isFalse()
+        assertThat(entryDirectory.resolve("${first.id}.md").exists()).isTrue()
+        assertThat(entryDirectory.resolve("${second.id}.md").exists()).isTrue()
+        assertThat(serializedRepository.observeTimeline("", emptySet()).first().map { it.title })
+            .containsExactly("First serialized", "Second serialized")
+    }
+
+    @Test
     fun timeline_searches_title_and_body_and_filters_when_tags_are_selected() = runTest {
         repository.save(sampleEntry(title = "Bright morning", tags = setOf(VaultTag.ACHIEVEMENT)), emptyList())
         repository.save(
@@ -411,6 +585,19 @@ class VaultRepositoryTest {
             ).first().map { it.title },
         ).containsExactly("New affirmation", "Old achievement").inOrder()
     }
+
+    private fun stagedVault(entry: app.respiral.core.model.VaultEntry): File =
+        createTempDirectory("respiral-staged-vault-").toFile().also { root ->
+            root.resolve("entries").mkdirs()
+            root.resolve("entries/${entry.id}.md")
+                .writeText(CanonicalMarkdownEntryCodec().encode(entry))
+            entry.media.forEach { media ->
+                root.resolve(media.relativePath).also { file ->
+                    file.parentFile!!.mkdirs()
+                    file.writeBytes(byteArrayOf(0x0a, 0x0b, 0x0c))
+                }
+            }
+        }
 }
 
 private fun app.respiral.core.model.VaultEntry.withMedia(

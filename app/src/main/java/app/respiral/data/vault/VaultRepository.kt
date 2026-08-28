@@ -57,8 +57,10 @@ interface VaultRepository {
 class DefaultVaultRepository private constructor(
     private val fileStore: VaultFileStore,
     private val afterSaveProjectionUpdate: suspend () -> Unit,
+    private val afterDeleteProjectionUpdate: suspend () -> Unit,
+    private val afterRefreshProjectionUpdate: suspend () -> Unit,
 ) : VaultRepository {
-    constructor(fileStore: VaultFileStore) : this(fileStore, {})
+    constructor(fileStore: VaultFileStore) : this(fileStore, {}, {}, {})
 
     /** Kept only until Task 4 moves the remaining application construction roots off Room. */
     constructor(
@@ -70,7 +72,22 @@ class DefaultVaultRepository private constructor(
         fun withAfterSaveProjectionUpdate(
             fileStore: VaultFileStore,
             afterSaveProjectionUpdate: suspend () -> Unit,
-        ): DefaultVaultRepository = DefaultVaultRepository(fileStore, afterSaveProjectionUpdate)
+        ): DefaultVaultRepository = withMutationHooks(
+            fileStore = fileStore,
+            afterSaveProjectionUpdate = afterSaveProjectionUpdate,
+        )
+
+        fun withMutationHooks(
+            fileStore: VaultFileStore,
+            afterSaveProjectionUpdate: suspend () -> Unit = {},
+            afterDeleteProjectionUpdate: suspend () -> Unit = {},
+            afterRefreshProjectionUpdate: suspend () -> Unit = {},
+        ): DefaultVaultRepository = DefaultVaultRepository(
+            fileStore,
+            afterSaveProjectionUpdate,
+            afterDeleteProjectionUpdate,
+            afterRefreshProjectionUpdate,
+        )
     }
 
     private val mutationMutex = Mutex()
@@ -133,6 +150,7 @@ class DefaultVaultRepository private constructor(
             val stagedDeletion = fileStore.stageDelete(id)
             try {
                 projection.value = previousProjection.filterNot { it.id == id }
+                afterDeleteProjectionUpdate()
                 stagedDeletion.complete()
             } catch (error: Throwable) {
                 try {
@@ -169,7 +187,7 @@ class DefaultVaultRepository private constructor(
         }
     }
 
-    private fun refreshLocked(recoveryReport: LegacyRecoveryReport? = null) {
+    private suspend fun refreshLocked(recoveryReport: LegacyRecoveryReport? = null) {
         val scan = fileStore.scan()
         projection.value = scan.entries
         mutableHealth.value = when {
@@ -188,15 +206,16 @@ class DefaultVaultRepository private constructor(
 
             else -> VaultHealth.Healthy
         }
+        afterRefreshProjectionUpdate()
     }
 
-    private fun mergeImportedVault(
+    private suspend fun mergeImportedVault(
         stagedVault: File,
         importedEntries: List<VaultEntry>,
     ): Set<UUID> {
         val previousProjection = projection.value
         val previousHealth = mutableHealth.value
-        val localIds = previousProjection.mapTo(mutableSetOf(), VaultEntry::id)
+        val localIds = fileStore.scan().entries.mapTo(mutableSetOf(), VaultEntry::id)
         val toImport = importedEntries.filterNot { it.id in localIds }
         val merged = fileStore.merge(stagedVault, toImport.mapTo(mutableSetOf(), VaultEntry::id))
         return try {
@@ -215,7 +234,7 @@ class DefaultVaultRepository private constructor(
         }
     }
 
-    private fun replaceImportedVault(
+    private suspend fun replaceImportedVault(
         stagedVault: File,
         importedEntries: List<VaultEntry>,
     ): Set<UUID> {
