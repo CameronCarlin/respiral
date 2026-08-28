@@ -92,6 +92,22 @@ class ReflectionViewModelTest {
             .isEqualTo("Some notes need attention. Your original files have not been removed. Diagnostic: RSP-R02.")
         assertThat(viewModel.shouldKeepAppData).isTrue()
     }
+
+    @Test
+    fun stale_replacement_after_rebuild_keeps_the_attention_guidance_visible() = runTest {
+        // Catches a replacement get() that escapes to nextEntry's generic error handler.
+        val repository = ReplacementAlsoDisappearsRepository(
+            stale = entry("First stale note", emptySet()),
+            replacement = entry("Replacement stale note", emptySet()),
+        )
+        val viewModel = ReflectionViewModel(repository, emptySet()) { candidates -> candidates.first() }
+
+        assertThat(viewModel.nextEntry()).isFalse()
+        assertThat(viewModel.message)
+            .isEqualTo("Some notes need attention. Your original files have not been removed. Diagnostic: RSP-R02.")
+        assertThat(viewModel.shouldKeepAppData).isTrue()
+        assertThat(repository.rebuildCalls).isEqualTo(1)
+    }
 }
 
 private class EntryDisappearsRepository(
@@ -119,6 +135,24 @@ private class EmptyAttentionRepository : VaultRepository {
     override suspend fun get(id: UUID): VaultEntry = error("unused")
     override suspend fun delete(id: UUID) = Unit
     override suspend fun rebuildIndex() = Unit
+}
+
+private class ReplacementAlsoDisappearsRepository(
+    private val stale: VaultEntry,
+    private val replacement: VaultEntry,
+) : VaultRepository {
+    var rebuilt = false
+    var rebuildCalls = 0
+
+    override val health = flowOf<VaultHealth>(VaultHealth.NeedsAttention(VaultDiagnosticCode.RSP_R02, 1))
+
+    override suspend fun save(entry: VaultEntry, pendingMedia: List<PendingMedia>): VaultEntry = entry
+    override fun observeTimeline(query: String, tags: Set<VaultTag>): Flow<List<VaultEntrySummary>> = flowOf(
+        listOf(if (rebuilt) replacement else stale).map { it.toSummary() },
+    )
+    override suspend fun get(id: UUID): VaultEntry = error("The selected entry disappeared")
+    override suspend fun delete(id: UUID) = Unit
+    override suspend fun rebuildIndex() { rebuilt = true; rebuildCalls += 1 }
 }
 
 private class RebuildingReflectionRepository(private val saved: VaultEntry) : VaultRepository {

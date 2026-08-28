@@ -65,10 +65,17 @@ class ReflectionViewModel(
                 showNoMatchingEntryMessage()
                 return false
             }
-            entry = repository.get(replacement.id)
-            message = null
-            shouldKeepAppData = false
-            return true
+            try {
+                entry = repository.get(replacement.id)
+                message = null
+                shouldKeepAppData = false
+                return true
+            } catch (cancellation: CancellationException) {
+                throw cancellation
+            } catch (_: Throwable) {
+                showNoMatchingEntryMessage()
+                return false
+            }
         }
     }
 
