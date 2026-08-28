@@ -8,6 +8,7 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -42,16 +43,26 @@ class VaultRuntime(
     private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
 ) {
     private val started = AtomicBoolean(false)
-    private val ready = CompletableDeferred<DefaultVaultRepository>()
+    private val ready = CompletableDeferred<Unit>()
+
+    @Volatile private var readinessFailure: Throwable? = null
 
     fun start(scope: CoroutineScope) {
         if (!started.compareAndSet(false, true)) return
-        scope.launch(ioDispatcher) {
+        val scopeJob = scope.coroutineContext[Job]
+        if (scopeJob?.isActive == false) {
+            failReadiness(CancellationException("Vault runtime scope is not active"))
+            return
+        }
+        scopeJob?.invokeOnCompletion { cause ->
+            if (cause != null && !ready.isCompleted) failReadiness(cause)
+        }
+        val startup = scope.launch(ioDispatcher) {
             try {
                 bootstrap()
-                ready.complete(repository)
+                ready.complete(Unit)
             } catch (error: CancellationException) {
-                ready.completeExceptionally(error)
+                failReadiness(error)
                 throw error
             } catch (_: Throwable) {
                 // Settings/storage failures must not strand valid Markdown behind readiness or
@@ -60,8 +71,15 @@ class VaultRuntime(
                     diagnosticCode = VaultDiagnosticCode.RSP_R03,
                     failureCount = 1,
                 )
-                runCatching { recoveryStateStore.writeRecoveryState(failed) }
-                runCatching {
+                try {
+                    recoveryStateStore.writeRecoveryState(failed)
+                } catch (error: CancellationException) {
+                    failReadiness(error)
+                    throw error
+                } catch (_: Throwable) {
+                    // The safe state is best-effort when settings storage itself is unavailable.
+                }
+                try {
                     repository.refresh(
                         LegacyRecoveryReport(
                             recoveredCount = 0,
@@ -69,13 +87,34 @@ class VaultRuntime(
                             diagnosticCode = failed.diagnosticCode,
                         ),
                     )
+                } catch (error: CancellationException) {
+                    failReadiness(error)
+                    throw error
+                } catch (_: Throwable) {
+                    // Readiness still completes if even the best-effort scan cannot be published.
                 }
-                ready.complete(repository)
+                ready.complete(Unit)
+            }
+        }
+        startup.invokeOnCompletion { cause ->
+            if (!ready.isCompleted) {
+                failReadiness(
+                    cause ?: IllegalStateException("Vault runtime completed before readiness"),
+                )
             }
         }
     }
 
-    suspend fun awaitReady(): DefaultVaultRepository = ready.await()
+    suspend fun awaitReady(): DefaultVaultRepository {
+        ready.await()
+        readinessFailure?.let { throw it }
+        return repository
+    }
+
+    private fun failReadiness(error: Throwable) {
+        readinessFailure = error
+        ready.complete(Unit)
+    }
 
     private suspend fun bootstrap() = withContext(ioDispatcher) {
         val persisted = recoveryStateStore.readRecoveryState()
@@ -120,7 +159,13 @@ class VaultRuntime(
                 diagnosticCode = failed.diagnosticCode,
             )
         } finally {
-            runCatching { source?.close() }
+            try {
+                source?.close()
+            } catch (error: CancellationException) {
+                throw error
+            } catch (_: Throwable) {
+                // Closing a retained read-only legacy source must not hide recovered Markdown.
+            }
         }
     }
 

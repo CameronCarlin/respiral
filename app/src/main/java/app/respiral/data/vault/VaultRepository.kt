@@ -185,6 +185,12 @@ class DefaultVaultRepository private constructor(
         val scan = fileStore.scan()
         projection.value = scan.entries
         mutableHealth.value = when {
+            recoveryReport?.diagnosticCode == VaultDiagnosticCode.RSP_R03 &&
+                recoveryReport.failureCount > 0 -> VaultHealth.NeedsAttention(
+                VaultDiagnosticCode.RSP_R03,
+                recoveryReport.failureCount,
+            )
+
             scan.unreadableCount > 0 -> VaultHealth.NeedsAttention(
                 VaultDiagnosticCode.RSP_R02,
                 scan.unreadableCount,

@@ -6,10 +6,21 @@ import com.google.common.truth.Truth.assertThat
 import java.nio.file.Files
 import java.time.Instant
 import java.util.UUID
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.async
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.test.advanceUntilIdle
+import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeout
 import org.junit.Test
 
+@OptIn(ExperimentalCoroutinesApi::class)
 class VaultRuntimeTest {
     @Test
     fun runtime_recovers_once_then_publishes_the_file_projection() = runTest {
@@ -87,18 +98,105 @@ class VaultRuntimeTest {
             .isEqualTo(VaultHealth.NeedsAttention(VaultDiagnosticCode.RSP_R03, 1))
     }
 
+    @Test
+    fun already_cancelled_start_scope_completes_readiness_exceptionally_instead_of_hanging() = runTest {
+        val fixture = fixture()
+        val cancelledJob = Job().apply { cancel(CancellationException("already stopped")) }
+        val cancelledScope = CoroutineScope(cancelledJob + StandardTestDispatcher(testScheduler))
+        val awaiting = async { fixture.runtime.awaitReady() }
+
+        fixture.runtime.start(cancelledScope)
+        advanceUntilIdle()
+
+        assertThat(awaiting.isCompleted).isTrue()
+        val failure = runCatching { awaiting.await() }.exceptionOrNull()
+        assertThat(failure).isInstanceOf(CancellationException::class.java)
+    }
+
+    @Test
+    fun cancellation_during_fallback_completes_readiness_exceptionally_instead_of_being_swallowed() = runTest {
+        val fixture = fixture(
+            stateReadFailure = IllegalStateException("settings broken"),
+            stateWriteFailure = CancellationException("fallback cancelled"),
+        )
+        val awaiting = async { fixture.runtime.awaitReady() }
+
+        fixture.runtime.start(this)
+        withContext(Dispatchers.Default.limitedParallelism(1)) {
+            withTimeout(1_000) { awaiting.join() }
+        }
+
+        assertThat(awaiting.isCompleted).isTrue()
+        val failure = runCatching { awaiting.await() }.exceptionOrNull()
+        assertThat(failure).isInstanceOf(CancellationException::class.java)
+        assertThat(failure).hasMessageThat().contains("fallback cancelled")
+    }
+
+    @Test
+    fun database_failure_takes_health_precedence_over_malformed_markdown() = runTest {
+        val fixture = fixture(snapshotFailure = IllegalStateException("db broken"))
+        fixture.store.rootDirectory.resolve("entries/broken.md").apply {
+            parentFile!!.mkdirs()
+            writeText("not canonical")
+        }
+
+        fixture.runtime.start(backgroundScope)
+        fixture.runtime.awaitReady()
+
+        assertThat(fixture.repository.health.value)
+            .isEqualTo(VaultHealth.NeedsAttention(VaultDiagnosticCode.RSP_R03, 1))
+        assertThat(fixture.stateStore.state)
+            .isEqualTo(PersistedRecoveryState(0, VaultDiagnosticCode.RSP_R03, 1))
+    }
+
+    @Test
+    fun database_open_failure_persists_safe_retry_state_and_keeps_markdown_available() = runTest {
+        val fixture = fixture(openFailure = IllegalStateException("cannot open"))
+        fixture.store.write(entry(title = "Canonical"))
+
+        fixture.runtime.start(backgroundScope)
+        fixture.runtime.awaitReady()
+
+        assertThat(fixture.repository.observeTimeline("", emptySet()).first().single().title)
+            .isEqualTo("Canonical")
+        assertThat(fixture.repository.health.value)
+            .isEqualTo(VaultHealth.NeedsAttention(VaultDiagnosticCode.RSP_R03, 1))
+        assertThat(fixture.stateStore.state)
+            .isEqualTo(PersistedRecoveryState(0, VaultDiagnosticCode.RSP_R03, 1))
+        assertThat(fixture.source.closeCalls).isEqualTo(0)
+    }
+
+    @Test
+    fun recovery_state_write_failure_keeps_recovered_markdown_available_and_ready() = runTest {
+        val fixture = fixture(
+            rows = listOf(legacyRow(title = "Recovered before write failed")),
+            stateWriteFailure = IllegalStateException("cannot persist"),
+        )
+
+        fixture.runtime.start(backgroundScope)
+        fixture.runtime.awaitReady()
+
+        assertThat(fixture.repository.observeTimeline("", emptySet()).first().single().title)
+            .isEqualTo("Recovered before write failed")
+        assertThat(fixture.repository.health.value)
+            .isEqualTo(VaultHealth.NeedsAttention(VaultDiagnosticCode.RSP_R03, 1))
+        assertThat(fixture.source.closeCalls).isEqualTo(1)
+    }
+
     private fun fixture(
         rows: List<EntryIndexEntity> = emptyList(),
         snapshotFailure: Throwable? = null,
         initialState: PersistedRecoveryState = PersistedRecoveryState(),
         databaseExists: Boolean = true,
         stateReadFailure: Throwable? = null,
+        stateWriteFailure: Throwable? = null,
+        openFailure: Throwable? = null,
     ): Fixture {
         val root = Files.createTempDirectory("respiral-runtime-").toFile()
         val store = VaultFileStore(root, CanonicalMarkdownEntryCodec()) { null }
         val repository = DefaultVaultRepository(store)
-        val stateStore = FakeRecoveryStateStore(initialState, stateReadFailure)
-        val source = FakeLegacySource(rows, snapshotFailure)
+        val stateStore = FakeRecoveryStateStore(initialState, stateReadFailure, stateWriteFailure)
+        val source = FakeLegacySource(rows, snapshotFailure, openFailure)
         return Fixture(
             store = store,
             repository = repository,
@@ -125,12 +223,14 @@ class VaultRuntimeTest {
     private class FakeRecoveryStateStore(
         var state: PersistedRecoveryState,
         private val readFailure: Throwable?,
+        private val writeFailure: Throwable?,
     ) : VaultRecoveryStateStore {
         override suspend fun readRecoveryState(): PersistedRecoveryState {
             readFailure?.let { throw it }
             return state
         }
         override suspend fun writeRecoveryState(state: PersistedRecoveryState) {
+            writeFailure?.let { throw it }
             this.state = state
         }
     }
@@ -138,6 +238,7 @@ class VaultRuntimeTest {
     private class FakeLegacySource(
         private val rows: List<EntryIndexEntity>,
         private val snapshotFailure: Throwable?,
+        private val openFailure: Throwable?,
     ) {
         var openCalls = 0
         var snapshotCalls = 0
@@ -145,6 +246,7 @@ class VaultRuntimeTest {
 
         fun open(): LegacyVaultSource {
             openCalls += 1
+            openFailure?.let { throw it }
             return object : LegacyVaultSource {
                 override suspend fun snapshot(): List<EntryIndexEntity> {
                     snapshotCalls += 1
