@@ -55,6 +55,18 @@ class ReflectionViewModelTest {
         assertThat(viewModel.entry?.title).isEqualTo("Saved note")
         assertThat(repository.rebuildCalls).isEqualTo(1)
     }
+
+    @Test
+    fun unreadable_index_is_rebuilt_before_reporting_that_the_note_cannot_open() = runTest {
+        val saved = entry("Recovered note", setOf(VaultTag.WHO_I_AM))
+        val repository = ThrowingThenRebuildingRepository(saved)
+        val viewModel = ReflectionViewModel(repository, emptySet()) { candidates -> candidates.first() }
+
+        assertThat(viewModel.nextEntry()).isTrue()
+        assertThat(viewModel.entry?.title).isEqualTo("Recovered note")
+        assertThat(repository.rebuildCalls).isEqualTo(1)
+        assertThat(viewModel.message).isNull()
+    }
 }
 
 private class RebuildingReflectionRepository(private val saved: VaultEntry) : VaultRepository {
@@ -65,6 +77,22 @@ private class RebuildingReflectionRepository(private val saved: VaultEntry) : Va
     override fun observeTimeline(query: String, tags: Set<VaultTag>): Flow<List<VaultEntrySummary>> = flowOf(
         if (rebuilt) listOf(VaultEntrySummary(saved.id, saved.title, saved.createdAt, saved.tags)) else emptyList(),
     )
+    override suspend fun get(id: UUID): VaultEntry = saved
+    override suspend fun delete(id: UUID) = Unit
+    override suspend fun rebuildIndex() { rebuilt = true; rebuildCalls += 1 }
+}
+
+private class ThrowingThenRebuildingRepository(private val saved: VaultEntry) : VaultRepository {
+    var rebuilt = false
+    var rebuildCalls = 0
+
+    override suspend fun save(entry: VaultEntry, pendingMedia: List<PendingMedia>): VaultEntry = entry
+    override fun observeTimeline(query: String, tags: Set<VaultTag>): Flow<List<VaultEntrySummary>> =
+        if (rebuilt) {
+            flowOf(listOf(VaultEntrySummary(saved.id, saved.title, saved.createdAt, saved.tags)))
+        } else {
+            flow { error("unreadable index") }
+        }
     override suspend fun get(id: UUID): VaultEntry = saved
     override suspend fun delete(id: UUID) = Unit
     override suspend fun rebuildIndex() { rebuilt = true; rebuildCalls += 1 }

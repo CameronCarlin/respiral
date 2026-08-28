@@ -26,13 +26,7 @@ class ReflectionViewModel(
     suspend fun nextEntry(): Boolean {
         isLoading = true
         return try {
-            var summaries = repository.observeTimeline(query = "", tags = activeTags).first()
-            // Room is only a rebuildable projection; recover once from the canonical Markdown
-            // vault when a fresh install or interrupted write left the projection empty.
-            if (summaries.isEmpty()) {
-                repository.rebuildIndex()
-                summaries = repository.observeTimeline(query = "", tags = activeTags).first()
-            }
+            val summaries = loadSummariesWithOneRebuild()
             val matches = summaries.filter { summary ->
                 activeTags.isEmpty() || summary.tags.any(activeTags::contains)
             }
@@ -55,5 +49,22 @@ class ReflectionViewModel(
         } finally {
             isLoading = false
         }
+    }
+
+    private suspend fun loadSummariesWithOneRebuild(): List<VaultEntrySummary> {
+        val firstRead = try {
+            repository.observeTimeline(query = "", tags = activeTags).first()
+        } catch (cancellation: CancellationException) {
+            throw cancellation
+        } catch (_: Throwable) {
+            null
+        }
+        if (!firstRead.isNullOrEmpty()) return firstRead
+
+        // Room is only a rebuildable projection. Recover once from the canonical Markdown vault
+        // when the projection is empty or unreadable, then let the caller report any real vault
+        // failure from the second attempt.
+        repository.rebuildIndex()
+        return repository.observeTimeline(query = "", tags = activeTags).first()
     }
 }
