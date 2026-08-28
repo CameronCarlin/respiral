@@ -10,6 +10,7 @@ import java.io.FileNotFoundException
 import java.io.IOException
 import java.io.InputStream
 import java.util.UUID
+import kotlinx.coroutines.CancellationException
 
 /** Owns the app-private canonical Markdown and media files under `filesDir/vault`. */
 class VaultFileStore {
@@ -48,6 +49,60 @@ class VaultFileStore {
             .map { codec.decode(it.readText(Charsets.UTF_8)) }
             .toList()
     }
+
+    internal fun scan(): VaultScan {
+        var unreadableCount = 0
+        val entries = entriesDirectory()
+            .listFiles()
+            .orEmpty()
+            .asSequence()
+            .filter { it.isFile() && it.getName().endsWith(".$MARKDOWN_EXTENSION") }
+            .sortedBy { it.getName() }
+            .mapNotNull { markdown ->
+                try {
+                    codec.decode(markdown.readText(Charsets.UTF_8))
+                } catch (error: Throwable) {
+                    if (error is CancellationException) throw error
+                    unreadableCount += 1
+                    null
+                }
+            }
+            .toList()
+        return VaultScan(entries = entries, unreadableCount = unreadableCount)
+    }
+
+    internal fun entryFileExists(id: UUID): Boolean = markdownFile(id).isFile
+
+    internal fun quarantineMalformed(id: UUID): File {
+        val source = markdownFile(id)
+        val destination = recoveryDirectory().resolve("$id.malformed.$MARKDOWN_EXTENSION")
+        ensureDirectory(destination.parentFile!!)
+        val temporary = temporarySibling(destination)
+        try {
+            source.copyTo(temporary, overwrite = false)
+            move(temporary, destination)
+        } catch (error: Throwable) {
+            temporary.delete()
+            throw error
+        }
+        return destination
+    }
+
+    internal fun discoverMedia(id: UUID): List<VaultMedia> = mediaDirectory(id)
+        .listFiles()
+        .orEmpty()
+        .asSequence()
+        .filter { it.isFile }
+        .mapNotNull { file ->
+            mimeTypeFor(file)?.let { mimeType ->
+                VaultMedia(
+                    relativePath = "$MEDIA_DIRECTORY/$id/${file.name}",
+                    mimeType = mimeType,
+                )
+            }
+        }
+        .sortedBy { File(it.relativePath).name }
+        .toList()
 
     /** Writes canonical Markdown atomically without changing media files. */
     fun write(entry: VaultEntry) {
@@ -336,6 +391,8 @@ class VaultFileStore {
 
     private fun mediaDirectory(id: UUID): File = vaultRoot.resolve(MEDIA_DIRECTORY).resolve(id.toString())
 
+    private fun recoveryDirectory(): File = vaultRoot.resolve(RECOVERY_DIRECTORY)
+
     private fun markdownFile(id: UUID): File = entriesDirectory().resolve("$id.$MARKDOWN_EXTENSION")
 
     private fun ensureDirectory(directory: File) {
@@ -353,10 +410,19 @@ class VaultFileStore {
         else -> ".bin"
     }
 
+    private fun mimeTypeFor(file: File): String? = when (file.extension.lowercase()) {
+        "jpg", "jpeg" -> "image/jpeg"
+        "png" -> "image/png"
+        "webp" -> "image/webp"
+        "gif" -> "image/gif"
+        else -> null
+    }
+
     private companion object {
         const val VAULT_DIRECTORY = "vault"
         const val ENTRIES_DIRECTORY = "entries"
         const val MEDIA_DIRECTORY = "media"
+        const val RECOVERY_DIRECTORY = "recovery"
         const val MARKDOWN_EXTENSION = "md"
     }
 }
