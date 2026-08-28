@@ -30,8 +30,13 @@ can be selected when running Gradle.
 
 The vault is kept under the app's private `filesDir`; other apps cannot browse
 it through normal storage access. Photos selected from the gallery or camera
-are copied into the vault. Markdown files are canonical and portable; the
-local Room database is only a rebuildable search/timeline index.
+are copied into the vault. Storage uses canonical Markdown with an in-memory
+projection and one-time legacy recovery; Room is retained only as the legacy
+source needed to recover notes created by earlier versions.
+
+When upgrading Respiral, install the new APK over the existing app. Do not
+uninstall first, because uninstalling removes the private vault and legacy data
+needed for recovery.
 
 Notifications and the home-screen widgets are opt-in. Notification text stays
 private on the lock screen by default. The optional vault lock uses the phone's

@@ -3,6 +3,8 @@ package app.respiral.ui.reflection
 import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertTextContains
+import androidx.compose.ui.test.ExperimentalTestApi
+import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.junit4.v2.createComposeRule
 import androidx.compose.ui.test.onAllNodesWithTag
 import androidx.compose.ui.test.onAllNodesWithText
@@ -10,27 +12,41 @@ import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performTextInput
+import androidx.room.Room
+import androidx.test.platform.app.InstrumentationRegistry
+import app.respiral.core.markdown.CanonicalMarkdownEntryCodec
 import app.respiral.core.model.VaultEntry
 import app.respiral.core.model.VaultTag
+import app.respiral.data.index.EntryIndexEntity
+import app.respiral.data.index.RespiralDatabase
 import app.respiral.data.vault.PendingMedia
+import app.respiral.data.vault.DefaultVaultRepository
+import app.respiral.data.vault.LegacyVaultRecovery
+import app.respiral.data.vault.VaultFileStore
 import app.respiral.data.vault.VaultDiagnosticCode
 import app.respiral.data.vault.VaultEntrySummary
 import app.respiral.data.vault.VaultHealth
 import app.respiral.data.vault.VaultRepository
 import app.respiral.ui.arrival.ArrivalScreen
 import app.respiral.ui.library.LibraryScreen
+import app.respiral.ui.theme.RespiralTheme
 import com.google.common.truth.Truth.assertThat
+import java.io.File
 import java.time.Instant
 import java.util.UUID
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.runBlocking
 import org.junit.Rule
 import org.junit.Test
 
 class ReflectionFlowTest {
     @get:Rule
     val composeTestRule = createComposeRule()
+
+    private lateinit var recoveryFixtureRoot: File
+    private lateinit var fileStore: VaultFileStore
 
     @Test
     fun arrival_uses_the_approved_two_primary_actions() {
@@ -88,6 +104,32 @@ class ReflectionFlowTest {
         composeTestRule.onNodeWithText("Do not uninstall Respiral or clear its app data.").assertIsDisplayed()
     }
 
+    @OptIn(ExperimentalTestApi::class)
+    @Test
+    fun legacy_index_only_note_is_recovered_and_reflection_displays_its_body() {
+        val database = createOnDeviceLegacyDatabase()
+        try {
+            val repository = runBlocking {
+                val row = legacyRow(title = "Still me", body = "I stayed kind under pressure.")
+                database.entryIndexDao().upsert(row)
+                assertThat(recoveryFixtureRoot.resolve("vault/entries/${row.id}.md").exists()).isFalse()
+                val report = LegacyVaultRecovery(fileStore).recover(database.entryIndexDao().snapshot())
+                assertThat(report.recoveredCount).isEqualTo(1)
+                DefaultVaultRepository(fileStore).apply { refresh(report) }
+            }
+
+            composeTestRule.setContent {
+                RespiralTheme { ReflectionScreen(repository, emptySet(), onBack = {}) }
+            }
+
+            composeTestRule.waitUntilAtLeastOneExists(hasText("I stayed kind under pressure."), 5_000)
+            composeTestRule.onNodeWithText("I stayed kind under pressure.").assertIsDisplayed()
+        } finally {
+            database.close()
+            recoveryFixtureRoot.deleteRecursively()
+        }
+    }
+
     @Test
     fun library_search_filters_a_reverse_chronological_timeline() {
         val repository = FakeVaultRepository().apply {
@@ -104,6 +146,35 @@ class ReflectionFlowTest {
         }
         composeTestRule.onAllNodesWithTag("timeline-entry")[0].assertTextContains("Newer kindness")
     }
+
+    private fun createOnDeviceLegacyDatabase(): RespiralDatabase {
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        recoveryFixtureRoot = context.cacheDir
+            .resolve("reflection-legacy-recovery-${UUID.randomUUID()}")
+            .apply { check(mkdirs()) }
+        fileStore = VaultFileStore(
+            vaultRoot = recoveryFixtureRoot.resolve("vault"),
+            codec = CanonicalMarkdownEntryCodec(),
+            openInputStream = context.contentResolver::openInputStream,
+        )
+        return Room.databaseBuilder(
+            context,
+            RespiralDatabase::class.java,
+            recoveryFixtureRoot.resolve("reflection-legacy.db").absolutePath,
+        ).build()
+    }
+}
+
+private fun legacyRow(title: String, body: String): EntryIndexEntity {
+    val timestamp = Instant.parse("2026-08-28T07:00:00Z").toEpochMilli()
+    return EntryIndexEntity(
+        id = UUID.nameUUIDFromBytes("reflection-legacy-recovery".toByteArray()).toString(),
+        title = title,
+        bodyForSearch = body,
+        createdAtEpochMs = timestamp,
+        updatedAtEpochMs = timestamp,
+        tagNames = "|AFFIRMATION|",
+    )
 }
 
 private class FakeVaultRepository : VaultRepository {
