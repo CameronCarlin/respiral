@@ -1,11 +1,8 @@
 package app.respiral.data.vault
 
-import androidx.room.Room
-import androidx.test.core.app.ApplicationProvider
 import app.respiral.core.markdown.CanonicalMarkdownEntryCodec
 import app.respiral.core.model.VaultEntry
 import app.respiral.core.model.VaultMedia
-import app.respiral.data.index.RespiralDatabase
 import app.respiral.sampleEntry
 import com.google.common.truth.Truth.assertThat
 import java.io.ByteArrayOutputStream
@@ -29,7 +26,6 @@ class ZipVaultTransferTest {
     private lateinit var vaultRoot: File
     private lateinit var cacheRoot: File
     private lateinit var sourceJpeg: File
-    private lateinit var database: RespiralDatabase
     private lateinit var fileStore: VaultFileStore
     private lateinit var repository: DefaultVaultRepository
     private lateinit var transfer: ZipVaultTransfer
@@ -41,22 +37,17 @@ class ZipVaultTransferTest {
         sourceJpeg = File.createTempFile("respiral-transfer-source-", ".jpg").apply {
             writeBytes(byteArrayOf(0x01, 0x02, 0x03))
         }
-        database = Room.inMemoryDatabaseBuilder(
-            ApplicationProvider.getApplicationContext(),
-            RespiralDatabase::class.java,
-        ).allowMainThreadQueries().build()
         fileStore = VaultFileStore(
             vaultRoot = vaultRoot,
             codec = CanonicalMarkdownEntryCodec(),
             openInputStream = { sourceJpeg.inputStream() },
         )
-        repository = DefaultVaultRepository(fileStore, database)
+        repository = DefaultVaultRepository(fileStore)
         transfer = ZipVaultTransfer(repository, fileStore, cacheRoot)
     }
 
     @After
     fun tearDown() {
-        database.close()
         vaultRoot.deleteRecursively()
         cacheRoot.deleteRecursively()
         sourceJpeg.delete()

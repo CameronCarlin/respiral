@@ -12,12 +12,7 @@ import android.os.Build
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import app.respiral.RespiralApplication
-import app.respiral.core.markdown.CanonicalMarkdownEntryCodec
 import app.respiral.core.time.SystemClock
-import app.respiral.data.index.RespiralDatabase
-import app.respiral.data.vault.DefaultVaultRepository
-import app.respiral.data.vault.VaultFileStore
-import app.respiral.data.vault.VaultRepository
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.first
@@ -38,10 +33,11 @@ class RespiralAlarmReceiver : BroadcastReceiver() {
     }
 
     private suspend fun deliver(context: Context) {
-        val settings = RespiralApplication.from(context).settingsRepository.settings.first()
+        val application = RespiralApplication.from(context)
+        val settings = application.settingsRepository.settings.first()
         if (settings.reminderModes.isEmpty() || settings.reminderTime == null) return
 
-        val repository = defaultVaultRepository(context)
+        val repository = application.awaitVaultRepository()
         val factory = DefaultReminderNotificationFactory(randomEntryProvider(repository))
         val mode = reminderModes(settings).random()
         val rendered = factory.build(mode, settings.revealNotificationText)
@@ -84,9 +80,4 @@ class RespiralAlarmReceiver : BroadcastReceiver() {
     private fun notificationsAllowed(context: Context): Boolean =
         Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU ||
             context.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED
-
-    private fun defaultVaultRepository(context: Context): VaultRepository = DefaultVaultRepository(
-        VaultFileStore(context, CanonicalMarkdownEntryCodec()),
-        RespiralDatabase.create(context),
-    )
 }

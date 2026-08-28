@@ -33,15 +33,11 @@ import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
 import app.respiral.RespiralApplication
-import app.respiral.core.markdown.CanonicalMarkdownEntryCodec
 import app.respiral.core.model.VaultSettings
 import app.respiral.core.model.VaultTag
 import app.respiral.core.time.SystemClock
-import app.respiral.data.index.RespiralDatabase
 import app.respiral.data.settings.SettingsRepository
-import app.respiral.data.vault.DefaultVaultRepository
 import app.respiral.data.vault.ImportPreview
-import app.respiral.data.vault.VaultFileStore
 import app.respiral.data.vault.VaultRepository
 import app.respiral.data.vault.ZipVaultTransfer
 import app.respiral.notifications.AndroidAlarmGateway
@@ -76,12 +72,12 @@ private const val EDITOR_ROUTE = "editor?id={id}&prompt={prompt}&tags={tags}"
 fun AppNavGraph(initialRoute: String? = null) {
     val context = LocalContext.current.applicationContext
     val application = RespiralApplication.from(context)
-    val repository = remember(context) { defaultVaultRepository(context) }
+    val repository = remember(application) { application.vaultRepository }
     val settingsRepository = remember(context) { application.settingsRepository }
     val session = remember(context) { application.vaultSession }
     val scheduler = remember(context) { DefaultReminderScheduler(AndroidAlarmGateway(context)) }
     val transfer = remember(context, repository) {
-        ZipVaultTransfer(repository, VaultFileStore(context, CanonicalMarkdownEntryCodec()), context.cacheDir)
+        ZipVaultTransfer(repository, application.vaultFileStore, context.cacheDir)
     }
     AppNavGraph(
         repository = repository,
@@ -301,7 +297,6 @@ private fun editorRoute(id: UUID? = null, prompt: WelcomePrompt? = null, tags: S
 }
 private fun reflectionRoute(tags: Set<VaultTag> = emptySet()): String = "reflection?tags=" + tags.sortedBy(VaultTag::ordinal).joinToString(",") { it.name }
 private fun parseTags(tags: String): Set<VaultTag> = tags.split(',').mapNotNull { runCatching { VaultTag.valueOf(it) }.getOrNull() }.toSet()
-private fun defaultVaultRepository(context: Context): VaultRepository = DefaultVaultRepository(VaultFileStore(context, CanonicalMarkdownEntryCodec()), RespiralDatabase.create(context))
 private object NoOpReminderScheduler : ReminderScheduler {
     override fun schedule(settings: VaultSettings) = Unit
     override fun cancel() = Unit

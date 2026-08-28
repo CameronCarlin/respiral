@@ -62,12 +62,6 @@ class DefaultVaultRepository private constructor(
 ) : VaultRepository {
     constructor(fileStore: VaultFileStore) : this(fileStore, {}, {}, {})
 
-    /** Kept only until Task 4 moves the remaining application construction roots off Room. */
-    constructor(
-        fileStore: VaultFileStore,
-        @Suppress("UNUSED_PARAMETER") legacyDatabase: Any,
-    ) : this(fileStore)
-
     internal companion object {
         fun withAfterSaveProjectionUpdate(
             fileStore: VaultFileStore,
