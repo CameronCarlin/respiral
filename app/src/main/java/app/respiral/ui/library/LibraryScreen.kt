@@ -82,6 +82,9 @@ fun LibraryScreen(
                     color = MaterialTheme.colorScheme.error,
                 )
             }
+            viewModel.healthMessage?.let { message ->
+                Text(message, style = MaterialTheme.typography.bodyLarge)
+            }
             if (entries.isEmpty()) {
                 val emptyMessage = if (viewModel.query.isBlank() && viewModel.selectedTags.isEmpty()) {
                     "Nothing is here yet. Add a small good thing whenever you are ready."

@@ -3,7 +3,9 @@ package app.respiral.ui.reflection
 import app.respiral.core.model.VaultEntry
 import app.respiral.core.model.VaultTag
 import app.respiral.data.vault.PendingMedia
+import app.respiral.data.vault.VaultDiagnosticCode
 import app.respiral.data.vault.VaultEntrySummary
+import app.respiral.data.vault.VaultHealth
 import app.respiral.data.vault.VaultRepository
 import com.google.common.truth.Truth.assertThat
 import java.time.Instant
@@ -67,6 +69,56 @@ class ReflectionViewModelTest {
         assertThat(repository.rebuildCalls).isEqualTo(1)
         assertThat(viewModel.message).isNull()
     }
+
+    @Test
+    fun missing_selected_entry_refreshes_once_and_selects_from_remaining_markdown() = runTest {
+        val first = entry("Stale note", emptySet())
+        val remaining = entry("Remaining note", emptySet())
+        val repository = EntryDisappearsRepository(first, remaining)
+        val viewModel = ReflectionViewModel(repository, emptySet()) { candidates -> candidates.first() }
+
+        assertThat(viewModel.nextEntry()).isTrue()
+        assertThat(viewModel.entry).isEqualTo(remaining)
+        assertThat(repository.rebuildCalls).isEqualTo(1)
+    }
+
+    @Test
+    fun empty_attention_vault_keeps_the_original_files_warning_visible() = runTest {
+        val repository = EmptyAttentionRepository()
+        val viewModel = ReflectionViewModel(repository, emptySet())
+
+        assertThat(viewModel.nextEntry()).isFalse()
+        assertThat(viewModel.message)
+            .isEqualTo("Some notes need attention. Your original files have not been removed. Diagnostic: RSP-R02.")
+        assertThat(viewModel.shouldKeepAppData).isTrue()
+    }
+}
+
+private class EntryDisappearsRepository(
+    private val stale: VaultEntry,
+    private val remaining: VaultEntry,
+) : VaultRepository {
+    var rebuilt = false
+    var rebuildCalls = 0
+
+    override suspend fun save(entry: VaultEntry, pendingMedia: List<PendingMedia>): VaultEntry = entry
+    override fun observeTimeline(query: String, tags: Set<VaultTag>): Flow<List<VaultEntrySummary>> = flowOf(
+        listOf(if (rebuilt) remaining else stale).map { it.toSummary() },
+    )
+    override suspend fun get(id: UUID): VaultEntry =
+        if (id == remaining.id) remaining else error("The selected entry disappeared")
+    override suspend fun delete(id: UUID) = Unit
+    override suspend fun rebuildIndex() { rebuilt = true; rebuildCalls += 1 }
+}
+
+private class EmptyAttentionRepository : VaultRepository {
+    override val health = flowOf<VaultHealth>(VaultHealth.NeedsAttention(VaultDiagnosticCode.RSP_R02, 1))
+
+    override suspend fun save(entry: VaultEntry, pendingMedia: List<PendingMedia>): VaultEntry = entry
+    override fun observeTimeline(query: String, tags: Set<VaultTag>): Flow<List<VaultEntrySummary>> = flowOf(emptyList())
+    override suspend fun get(id: UUID): VaultEntry = error("unused")
+    override suspend fun delete(id: UUID) = Unit
+    override suspend fun rebuildIndex() = Unit
 }
 
 private class RebuildingReflectionRepository(private val saved: VaultEntry) : VaultRepository {
@@ -128,3 +180,5 @@ private fun entry(title: String, tags: Set<VaultTag>): VaultEntry = VaultEntry(
     tags = tags,
     media = emptyList(),
 )
+
+private fun VaultEntry.toSummary() = VaultEntrySummary(id, title, createdAt, tags)

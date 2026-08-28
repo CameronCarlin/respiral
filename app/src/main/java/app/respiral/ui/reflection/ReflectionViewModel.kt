@@ -6,6 +6,7 @@ import androidx.compose.runtime.setValue
 import app.respiral.core.model.VaultEntry
 import app.respiral.core.model.VaultTag
 import app.respiral.data.vault.VaultEntrySummary
+import app.respiral.data.vault.VaultHealth
 import app.respiral.data.vault.VaultRepository
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.first
@@ -22,32 +23,72 @@ class ReflectionViewModel(
         private set
     var message by mutableStateOf<String?>(null)
         private set
+    var shouldKeepAppData by mutableStateOf(false)
+        private set
 
     suspend fun nextEntry(): Boolean {
         isLoading = true
         return try {
             val summaries = loadSummariesWithOneRebuild()
-            val matches = summaries.filter { summary ->
-                activeTags.isEmpty() || summary.tags.any(activeTags::contains)
-            }
-            val chosen = matches.takeIf { it.isNotEmpty() }?.let(select)
+            val chosen = selectMatching(summaries)
             if (chosen == null) {
-                entry = null
-                message = "There isn't a matching note yet. Your words will be here when you are ready."
+                showNoMatchingEntryMessage()
                 false
             } else {
-                entry = repository.get(chosen.id)
-                message = null
-                true
+                selectEntry(chosen)
             }
         } catch (cancellation: CancellationException) {
             throw cancellation
         } catch (_: Throwable) {
             entry = null
             message = "This note couldn't be opened right now. Your vault stays private on this device."
+            shouldKeepAppData = false
             false
         } finally {
             isLoading = false
+        }
+    }
+
+    private suspend fun selectEntry(chosen: VaultEntrySummary): Boolean {
+        try {
+            entry = repository.get(chosen.id)
+            message = null
+            shouldKeepAppData = false
+            return true
+        } catch (cancellation: CancellationException) {
+            throw cancellation
+        } catch (_: Throwable) {
+            repository.rebuildIndex()
+            val refreshed = repository.observeTimeline(query = "", tags = activeTags).first()
+            val replacement = selectMatching(refreshed)
+            if (replacement == null) {
+                showNoMatchingEntryMessage()
+                return false
+            }
+            entry = repository.get(replacement.id)
+            message = null
+            shouldKeepAppData = false
+            return true
+        }
+    }
+
+    private fun selectMatching(summaries: List<VaultEntrySummary>): VaultEntrySummary? = summaries
+        .filter { summary -> activeTags.isEmpty() || summary.tags.any(activeTags::contains) }
+        .takeIf { it.isNotEmpty() }
+        ?.let(select)
+
+    private suspend fun showNoMatchingEntryMessage() {
+        entry = null
+        when (val health = repository.health.first()) {
+            is VaultHealth.NeedsAttention -> {
+                message = health.messageOrNull()
+                shouldKeepAppData = true
+            }
+
+            else -> {
+                message = "There isn't a matching note yet. Your words will be here when you are ready."
+                shouldKeepAppData = false
+            }
         }
     }
 
@@ -67,4 +108,15 @@ class ReflectionViewModel(
         repository.rebuildIndex()
         return repository.observeTimeline(query = "", tags = activeTags).first()
     }
+}
+
+internal fun VaultHealth.messageOrNull(): String? = when (this) {
+    VaultHealth.Loading,
+    VaultHealth.Healthy,
+    -> null
+
+    VaultHealth.Recovered(1) -> "Respiral gently repaired 1 local note."
+    is VaultHealth.Recovered -> "Respiral gently repaired $count local notes."
+    is VaultHealth.NeedsAttention ->
+        "Some notes need attention. Your original files have not been removed. Diagnostic: ${code.displayValue}."
 }

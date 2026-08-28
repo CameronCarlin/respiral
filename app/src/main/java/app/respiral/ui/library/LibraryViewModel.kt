@@ -5,6 +5,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import app.respiral.core.model.VaultTag
 import app.respiral.data.vault.VaultEntrySummary
+import app.respiral.data.vault.VaultHealth
 import app.respiral.data.vault.VaultRepository
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -15,6 +16,7 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.launch
 
 /** Keeps the library query and tag selection close to the timeline it drives. */
 @OptIn(ExperimentalCoroutinesApi::class)
@@ -39,6 +41,11 @@ class LibraryViewModel(
     var loadError by mutableStateOf(false)
         private set
 
+    private var healthMessageValue by mutableStateOf<String?>(null)
+
+    val healthMessage: String?
+        get() = healthMessageValue
+
     val entries: StateFlow<List<VaultEntrySummary>> = combine(queryFlow, tagsFlow) { query, tags -> query to tags }
         .flatMapLatest { (query, tags) ->
             repository.observeTimeline(query, tags)
@@ -49,8 +56,27 @@ class LibraryViewModel(
         }
         .stateIn(scope, SharingStarted.Eagerly, emptyList())
 
+    init {
+        scope.launch {
+            repository.health.collect { health ->
+                healthMessageValue = health.messageOrNull()
+            }
+        }
+    }
+
     fun toggleTag(tag: VaultTag) {
         selectedTags = if (tag in selectedTags) selectedTags - tag else selectedTags + tag
         tagsFlow.value = selectedTags
     }
+}
+
+private fun VaultHealth.messageOrNull(): String? = when (this) {
+    VaultHealth.Loading,
+    VaultHealth.Healthy,
+    -> null
+
+    VaultHealth.Recovered(1) -> "Respiral gently repaired 1 local note."
+    is VaultHealth.Recovered -> "Respiral gently repaired $count local notes."
+    is VaultHealth.NeedsAttention ->
+        "Some notes need attention. Your original files have not been removed. Diagnostic: ${code.displayValue}."
 }

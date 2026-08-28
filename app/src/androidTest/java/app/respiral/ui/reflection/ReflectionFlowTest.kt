@@ -13,7 +13,9 @@ import androidx.compose.ui.test.performTextInput
 import app.respiral.core.model.VaultEntry
 import app.respiral.core.model.VaultTag
 import app.respiral.data.vault.PendingMedia
+import app.respiral.data.vault.VaultDiagnosticCode
 import app.respiral.data.vault.VaultEntrySummary
+import app.respiral.data.vault.VaultHealth
 import app.respiral.data.vault.VaultRepository
 import app.respiral.ui.arrival.ArrivalScreen
 import app.respiral.ui.library.LibraryScreen
@@ -70,6 +72,23 @@ class ReflectionFlowTest {
     }
 
     @Test
+    fun reflection_hides_the_gentle_card_when_no_note_remains_and_attention_is_needed() {
+        val repository = FakeVaultRepository().apply {
+            health.value = VaultHealth.NeedsAttention(VaultDiagnosticCode.RSP_R02, 1)
+        }
+        composeTestRule.setContent {
+            ReflectionScreen(repository = repository, tags = emptySet(), onBack = {})
+        }
+
+        composeTestRule.waitUntil(timeoutMillis = 5_000) {
+            composeTestRule.onAllNodesWithText("Some notes need attention. Your original files have not been removed. Diagnostic: RSP-R02.")
+                .fetchSemanticsNodes().isNotEmpty()
+        }
+        composeTestRule.onAllNodesWithText("Take this gently").assertCountEquals(0)
+        composeTestRule.onNodeWithText("Do not uninstall Respiral or clear its app data.").assertIsDisplayed()
+    }
+
+    @Test
     fun library_search_filters_a_reverse_chronological_timeline() {
         val repository = FakeVaultRepository().apply {
             seed(sampleEntry(title = "Older kindness", createdAt = Instant.parse("2026-08-26T09:00:00Z")))
@@ -89,6 +108,7 @@ class ReflectionFlowTest {
 
 private class FakeVaultRepository : VaultRepository {
     private val entries = MutableStateFlow<List<VaultEntry>>(emptyList())
+    override val health = MutableStateFlow<VaultHealth>(VaultHealth.Healthy)
 
     fun seed(entry: VaultEntry) {
         entries.value = (entries.value.filterNot { it.id == entry.id } + entry)

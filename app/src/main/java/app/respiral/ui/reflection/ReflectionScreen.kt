@@ -21,6 +21,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
@@ -38,6 +39,7 @@ import androidx.compose.ui.unit.dp
 import app.respiral.core.model.VaultEntry
 import app.respiral.core.model.VaultTag
 import app.respiral.data.vault.VaultRepository
+import app.respiral.data.vault.VaultHealth
 import app.respiral.ui.theme.Mustard
 import java.io.File
 import kotlinx.coroutines.coroutineScope
@@ -51,6 +53,7 @@ fun ReflectionScreen(
     onBack: () -> Unit,
 ) {
     val viewModel = remember(repository, tags) { ReflectionViewModel(repository, tags) }
+    val health by repository.health.collectAsState(initial = VaultHealth.Loading)
     val scope = rememberCoroutineScope()
     var breathing by remember { mutableStateOf(false) }
     var secondsRemaining by remember { mutableIntStateOf(30) }
@@ -88,20 +91,35 @@ fun ReflectionScreen(
         ) {
             TextButton(onClick = onBack) { Text("Back") }
             Text("A few words you left for yourself", style = MaterialTheme.typography.headlineMedium)
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(72.dp)
-                    .scale(breathScale.value)
-                    .background(Mustard),
-                contentAlignment = Alignment.Center,
-            ) {
-                Text("Take this gently", style = MaterialTheme.typography.titleMedium)
+            if (viewModel.entry != null) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(72.dp)
+                        .scale(breathScale.value)
+                        .background(Mustard),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text("Take this gently", style = MaterialTheme.typography.titleMedium)
+                }
+            }
+            if (viewModel.entry != null || health !is VaultHealth.NeedsAttention) {
+                health.messageOrNull()?.let { message ->
+                    Text(message, style = MaterialTheme.typography.bodyLarge)
+                }
             }
             when {
                 viewModel.isLoading -> Text("Finding a note…")
                 viewModel.entry != null -> ReflectionEntry(viewModel.entry!!)
-                else -> Text(viewModel.message.orEmpty(), style = MaterialTheme.typography.bodyLarge)
+                else -> {
+                    Text(viewModel.message.orEmpty(), style = MaterialTheme.typography.bodyLarge)
+                    if (viewModel.shouldKeepAppData) {
+                        Text(
+                            "Do not uninstall Respiral or clear its app data.",
+                            style = MaterialTheme.typography.bodyLarge,
+                        )
+                    }
+                }
             }
             Button(
                 modifier = Modifier.fillMaxWidth(),
