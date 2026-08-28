@@ -1,16 +1,22 @@
 package app.respiral.data.vault
 
 import android.net.Uri
-import androidx.room.withTransaction
 import app.respiral.core.model.VaultEntry
 import app.respiral.core.model.VaultTag
-import app.respiral.data.index.EntryIndexEntity
-import app.respiral.data.index.RespiralDatabase
 import java.io.File
+import java.io.FileNotFoundException
 import java.time.Instant
 import java.util.UUID
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 
 /** A newly selected media item; it is appended to an entry's existing canonical media. */
 data class PendingMedia(val source: Uri, val mimeType: String)
@@ -23,6 +29,9 @@ data class VaultEntrySummary(
 )
 
 interface VaultRepository {
+    val health: Flow<VaultHealth>
+        get() = flowOf(VaultHealth.Healthy)
+
     /** Saves text and retains [entry.media], appending any newly selected [pendingMedia]. */
     suspend fun save(entry: VaultEntry, pendingMedia: List<PendingMedia>): VaultEntry
 
@@ -47,136 +56,192 @@ interface VaultRepository {
 
 class DefaultVaultRepository private constructor(
     private val fileStore: VaultFileStore,
-    private val database: RespiralDatabase,
-    private val afterSaveIndexUpsert: suspend () -> Unit,
+    private val afterSaveProjectionUpdate: suspend () -> Unit,
 ) : VaultRepository {
-    constructor(fileStore: VaultFileStore, database: RespiralDatabase) : this(fileStore, database, {})
+    constructor(fileStore: VaultFileStore) : this(fileStore, {})
+
+    /** Kept only until Task 4 moves the remaining application construction roots off Room. */
+    constructor(
+        fileStore: VaultFileStore,
+        @Suppress("UNUSED_PARAMETER") legacyDatabase: Any,
+    ) : this(fileStore)
 
     internal companion object {
-        fun withAfterSaveIndexUpsert(
+        fun withAfterSaveProjectionUpdate(
             fileStore: VaultFileStore,
-            database: RespiralDatabase,
-            afterSaveIndexUpsert: suspend () -> Unit,
-        ): DefaultVaultRepository = DefaultVaultRepository(fileStore, database, afterSaveIndexUpsert)
+            afterSaveProjectionUpdate: suspend () -> Unit,
+        ): DefaultVaultRepository = DefaultVaultRepository(fileStore, afterSaveProjectionUpdate)
     }
 
-    private val indexDao = database.entryIndexDao()
+    private val mutationMutex = Mutex()
+    private val projection = MutableStateFlow<List<VaultEntry>>(emptyList())
+    private val mutableHealth = MutableStateFlow<VaultHealth>(VaultHealth.Loading)
 
-    override suspend fun save(entry: VaultEntry, pendingMedia: List<PendingMedia>): VaultEntry {
-        val staged = fileStore.stage(entry, pendingMedia)
-        val promoted = fileStore.promote(staged)
-        try {
-            database.withTransaction {
-                indexDao.upsert(staged.entry.toIndexEntity())
-                afterSaveIndexUpsert()
+    override val health: StateFlow<VaultHealth> = mutableHealth.asStateFlow()
+
+    override suspend fun save(
+        entry: VaultEntry,
+        pendingMedia: List<PendingMedia>,
+    ): VaultEntry = withContext(Dispatchers.IO) {
+        mutationMutex.withLock {
+            val previousProjection = projection.value
+            val staged = fileStore.stage(entry, pendingMedia)
+            val promoted = fileStore.promote(staged)
+            try {
+                val decoded = fileStore.read(staged.entry.id)
+                projection.value = previousProjection
+                    .filterNot { it.id == decoded.id }
+                    .plus(decoded)
+                afterSaveProjectionUpdate()
+                promoted.complete()
+                decoded
+            } catch (error: Throwable) {
+                try {
+                    promoted.restore()
+                } catch (restoreError: Throwable) {
+                    error.addSuppressed(restoreError)
+                }
+                projection.value = previousProjection
+                throw error
             }
-            promoted.complete()
-            return staged.entry
-        } catch (error: Throwable) {
-            promoted.restore()
-            throw error
         }
     }
 
-    override fun observeTimeline(query: String, tags: Set<VaultTag>): Flow<List<VaultEntrySummary>> =
-        indexDao.observeTimeline(
-            query = query.escapeLikePattern(),
-            hasSelectedTags = tags.isNotEmpty(),
-            includeAchievement = VaultTag.ACHIEVEMENT in tags,
-            includeAffirmation = VaultTag.AFFIRMATION in tags,
-            includeWhoIAm = VaultTag.WHO_I_AM in tags,
-        ).map { entries -> entries.map(EntryIndexEntity::toSummary) }
-
-    override suspend fun get(id: UUID): VaultEntry = fileStore.read(id)
-
-    override suspend fun delete(id: UUID) {
-        val stagedDeletion = fileStore.stageDelete(id)
-        try {
-            database.withTransaction {
-                indexDao.delete(id.toString())
+    override fun observeTimeline(
+        query: String,
+        tags: Set<VaultTag>,
+    ): Flow<List<VaultEntrySummary>> = projection.map { entries ->
+        entries
+            .asSequence()
+            .filter { entry ->
+                entry.title.contains(query, ignoreCase = true) ||
+                    entry.body.contains(query, ignoreCase = true)
             }
-            stagedDeletion.complete()
-        } catch (error: Throwable) {
-            stagedDeletion.restore()
-            throw error
+            .filter { entry -> tags.isEmpty() || entry.tags.any(tags::contains) }
+            .sortedByDescending(VaultEntry::createdAt)
+            .map(VaultEntry::toSummary)
+            .toList()
+    }
+
+    override suspend fun get(id: UUID): VaultEntry = projection.value
+        .firstOrNull { it.id == id }
+        ?: throw FileNotFoundException("Vault entry is not in the current projection: $id")
+
+    override suspend fun delete(id: UUID) = withContext(Dispatchers.IO) {
+        mutationMutex.withLock {
+            val previousProjection = projection.value
+            val stagedDeletion = fileStore.stageDelete(id)
+            try {
+                projection.value = previousProjection.filterNot { it.id == id }
+                stagedDeletion.complete()
+            } catch (error: Throwable) {
+                try {
+                    stagedDeletion.restore()
+                } catch (restoreError: Throwable) {
+                    error.addSuppressed(restoreError)
+                }
+                projection.value = previousProjection
+                throw error
+            }
+        }
+    }
+
+    suspend fun refresh(recoveryReport: LegacyRecoveryReport? = null) = withContext(Dispatchers.IO) {
+        mutationMutex.withLock {
+            refreshLocked(recoveryReport)
         }
     }
 
     override suspend fun rebuildIndex() {
-        val entries = fileStore.readAll()
-        database.withTransaction {
-            indexDao.clear()
-            entries.forEach { indexDao.upsert(it.toIndexEntity()) }
-        }
+        refresh()
     }
 
     override suspend fun applyImportedVault(
         stagedVault: File,
         entries: List<VaultEntry>,
         mode: ImportMode,
-    ): Set<UUID> = when (mode) {
-        ImportMode.MERGE -> {
-            val localIds = fileStore.readAll().mapTo(mutableSetOf()) { it.id }
-            val toImport = entries.filterNot { it.id in localIds }
-            val merged = fileStore.merge(stagedVault, toImport.map { it.id }.toSet())
-            try {
-                rebuildIndex()
-                merged.complete()
-                toImport.mapTo(mutableSetOf()) { it.id }
-            } catch (error: Throwable) {
-                try {
-                    merged.restore()
-                    rebuildIndex()
-                } catch (restoreError: Throwable) {
-                    error.addSuppressed(restoreError)
-                }
-                throw error
+    ): Set<UUID> = withContext(Dispatchers.IO) {
+        mutationMutex.withLock {
+            when (mode) {
+                ImportMode.MERGE -> mergeImportedVault(stagedVault, entries)
+                ImportMode.REPLACE -> replaceImportedVault(stagedVault, entries)
             }
         }
+    }
 
-        ImportMode.REPLACE -> {
-            val replacement = fileStore.replaceRoot(stagedVault)
+    private fun refreshLocked(recoveryReport: LegacyRecoveryReport? = null) {
+        val scan = fileStore.scan()
+        projection.value = scan.entries
+        mutableHealth.value = when {
+            scan.unreadableCount > 0 -> VaultHealth.NeedsAttention(
+                VaultDiagnosticCode.RSP_R02,
+                scan.unreadableCount,
+            )
+
+            recoveryReport?.failureCount?.let { it > 0 } == true -> VaultHealth.NeedsAttention(
+                recoveryReport.diagnosticCode!!,
+                recoveryReport.failureCount,
+            )
+
+            recoveryReport?.recoveredCount?.let { it > 0 } == true ->
+                VaultHealth.Recovered(recoveryReport.recoveredCount)
+
+            else -> VaultHealth.Healthy
+        }
+    }
+
+    private fun mergeImportedVault(
+        stagedVault: File,
+        importedEntries: List<VaultEntry>,
+    ): Set<UUID> {
+        val previousProjection = projection.value
+        val previousHealth = mutableHealth.value
+        val localIds = previousProjection.mapTo(mutableSetOf(), VaultEntry::id)
+        val toImport = importedEntries.filterNot { it.id in localIds }
+        val merged = fileStore.merge(stagedVault, toImport.mapTo(mutableSetOf(), VaultEntry::id))
+        return try {
+            refreshLocked()
+            merged.complete()
+            toImport.mapTo(mutableSetOf(), VaultEntry::id)
+        } catch (error: Throwable) {
             try {
-                rebuildIndex()
-                replacement.complete()
-                entries.mapTo(mutableSetOf()) { it.id }
-            } catch (error: Throwable) {
-                try {
-                    replacement.restore()
-                    rebuildIndex()
-                } catch (restoreError: Throwable) {
-                    error.addSuppressed(restoreError)
-                }
-                throw error
+                merged.restore()
+            } catch (restoreError: Throwable) {
+                error.addSuppressed(restoreError)
             }
+            projection.value = previousProjection
+            mutableHealth.value = previousHealth
+            throw error
+        }
+    }
+
+    private fun replaceImportedVault(
+        stagedVault: File,
+        importedEntries: List<VaultEntry>,
+    ): Set<UUID> {
+        val previousProjection = projection.value
+        val previousHealth = mutableHealth.value
+        val replacement = fileStore.replaceRoot(stagedVault)
+        return try {
+            refreshLocked()
+            replacement.complete()
+            importedEntries.mapTo(mutableSetOf(), VaultEntry::id)
+        } catch (error: Throwable) {
+            try {
+                replacement.restore()
+            } catch (restoreError: Throwable) {
+                error.addSuppressed(restoreError)
+            }
+            projection.value = previousProjection
+            mutableHealth.value = previousHealth
+            throw error
         }
     }
 }
 
-private fun VaultEntry.toIndexEntity(): EntryIndexEntity = EntryIndexEntity(
-    id = id.toString(),
+private fun VaultEntry.toSummary(): VaultEntrySummary = VaultEntrySummary(
+    id = id,
     title = title,
-    bodyForSearch = body,
-    createdAtEpochMs = createdAt.toEpochMilli(),
-    updatedAtEpochMs = updatedAt.toEpochMilli(),
-    tagNames = tags.sortedBy(VaultTag::ordinal).joinToString(separator = "", prefix = "|", postfix = "|") { it.name },
+    createdAt = createdAt,
+    tags = tags,
 )
-
-private fun EntryIndexEntity.toSummary(): VaultEntrySummary = VaultEntrySummary(
-    id = UUID.fromString(id),
-    title = title,
-    createdAt = Instant.ofEpochMilli(createdAtEpochMs),
-    tags = tagNames
-        .trim('|')
-        .split('|')
-        .filter(String::isNotEmpty)
-        .map(VaultTag::valueOf)
-        .toSet(),
-)
-
-private fun String.escapeLikePattern(): String = buildString(length) {
-    for (character in this@escapeLikePattern) {
-        if (character == '%' || character == '_' || character == '\\') append('\\')
-        append(character)
-    }
-}

@@ -1,12 +1,9 @@
 package app.respiral.data.vault
 
 import android.net.Uri
-import androidx.room.Room
-import androidx.test.core.app.ApplicationProvider
 import app.respiral.core.markdown.CanonicalMarkdownEntryCodec
 import app.respiral.core.model.VaultMedia
 import app.respiral.core.model.VaultTag
-import app.respiral.data.index.RespiralDatabase
 import app.respiral.laterInstant
 import app.respiral.sampleEntry
 import com.google.common.truth.Truth.assertThat
@@ -30,10 +27,12 @@ class VaultRepositoryTest {
     private lateinit var sourceJpeg: File
     private lateinit var sourcePng: File
     private lateinit var outsideMedia: File
-    private lateinit var database: RespiralDatabase
     private lateinit var fileStore: VaultFileStore
-    private lateinit var repository: VaultRepository
+    private lateinit var repository: DefaultVaultRepository
     private var openSource: (Uri) -> InputStream? = { sourceJpeg.inputStream() }
+
+    private val entryDirectory: File
+        get() = vaultRoot.resolve("entries")
 
     private val pendingJpeg: PendingMedia
         get() = PendingMedia(Uri.parse("content://respiral-test/photo.jpg"), "image/jpeg")
@@ -53,10 +52,6 @@ class VaultRepositoryTest {
         outsideMedia = vaultRoot.resolve("outside.jpg").apply {
             writeBytes(byteArrayOf(0x07, 0x08, 0x09))
         }
-        database = Room.inMemoryDatabaseBuilder(
-            ApplicationProvider.getApplicationContext(),
-            RespiralDatabase::class.java,
-        ).allowMainThreadQueries().build()
         fileStore = VaultFileStore(
             vaultRoot = vaultRoot,
             codec = CanonicalMarkdownEntryCodec(),
@@ -64,12 +59,11 @@ class VaultRepositoryTest {
                 if (uri.lastPathSegment == "photo.png") sourcePng.inputStream() else openSource(uri)
             },
         )
-        repository = DefaultVaultRepository(fileStore, database)
+        repository = DefaultVaultRepository(fileStore)
     }
 
     @After
     fun tearDown() {
-        database.close()
         vaultRoot.deleteRecursively()
         sourceJpeg.delete()
         sourcePng.delete()
@@ -88,6 +82,17 @@ class VaultRepositoryTest {
     }
 
     @Test
+    fun restart_rebuilds_timeline_only_from_canonical_markdown() = runTest {
+        fileStore.write(sampleEntry(title = "From Markdown"))
+        val restarted = DefaultVaultRepository(fileStore)
+
+        restarted.refresh()
+
+        assertThat(restarted.observeTimeline("", emptySet()).first().single().title)
+            .isEqualTo("From Markdown")
+    }
+
+    @Test
     fun rebuild_index_recovers_timeline_from_markdown_files() = runTest {
         val entry = sampleEntry()
         fileStore.write(entry)
@@ -98,7 +103,20 @@ class VaultRepositoryTest {
     }
 
     @Test
-    fun editing_an_entry_preserves_its_id_and_replaces_its_index_row() = runTest {
+    fun unreadable_markdown_does_not_block_valid_timeline_entries() = runTest {
+        fileStore.write(sampleEntry(title = "Valid"))
+        entryDirectory.resolve("broken.md").writeText("broken")
+
+        repository.refresh()
+
+        assertThat(repository.observeTimeline("", emptySet()).first().map { it.title })
+            .containsExactly("Valid")
+        assertThat(repository.health.value)
+            .isEqualTo(VaultHealth.NeedsAttention(VaultDiagnosticCode.RSP_R02, 1))
+    }
+
+    @Test
+    fun editing_an_entry_preserves_its_id_and_replaces_its_projection_entry() = runTest {
         val original = repository.save(sampleEntry(title = "First"), emptyList())
 
         repository.save(original.copy(title = "Revised", updatedAt = laterInstant), emptyList())
@@ -143,7 +161,7 @@ class VaultRepositoryTest {
     }
 
     @Test
-    fun missing_retained_media_fails_without_changing_markdown_media_or_index() = runTest {
+    fun missing_retained_media_fails_without_changing_markdown_media_or_projection() = runTest {
         val original = repository.save(sampleEntry(title = "Original"), listOf(pendingJpeg))
         val originalMarkdown = vaultRoot.resolve("entries/${original.id}.md").readBytes()
         val originalMedia = vaultRoot.resolve("media/${original.id}/0.jpg").readBytes()
@@ -166,7 +184,7 @@ class VaultRepositoryTest {
     }
 
     @Test
-    fun outside_retained_media_fails_without_changing_markdown_media_or_index() = runTest {
+    fun outside_retained_media_fails_without_changing_markdown_media_or_projection() = runTest {
         val original = repository.save(sampleEntry(title = "Original"), listOf(pendingJpeg))
         val originalMarkdown = vaultRoot.resolve("entries/${original.id}.md").readBytes()
         val originalMedia = vaultRoot.resolve("media/${original.id}/0.jpg").readBytes()
@@ -189,7 +207,7 @@ class VaultRepositoryTest {
     }
 
     @Test
-    fun delete_removes_markdown_media_and_index_row() = runTest {
+    fun delete_removes_markdown_media_and_projection_entry() = runTest {
         val saved = repository.save(sampleEntry(), listOf(pendingJpeg))
 
         repository.delete(saved.id)
@@ -214,7 +232,7 @@ class VaultRepositoryTest {
     }
 
     @Test
-    fun failed_media_copy_leaves_existing_entry_and_index_unchanged() = runTest {
+    fun failed_media_copy_leaves_existing_entry_and_projection_unchanged() = runTest {
         val original = repository.save(sampleEntry(title = "Original"), emptyList())
         openSource = {
             object : InputStream() {
@@ -233,19 +251,20 @@ class VaultRepositoryTest {
     }
 
     @Test
-    fun index_failure_after_file_promotion_restores_previous_markdown_media_and_index() = runTest {
+    fun projection_failure_after_file_promotion_restores_previous_markdown_media_and_projection() = runTest {
         val original = repository.save(sampleEntry(title = "Original"), listOf(pendingJpeg))
-        val failingRepository = DefaultVaultRepository.withAfterSaveIndexUpsert(fileStore, database) {
-            throw IOException("index write failed")
+        val failingRepository = DefaultVaultRepository.withAfterSaveProjectionUpdate(fileStore) {
+            throw IOException("projection update failed")
         }
+        failingRepository.refresh()
 
         val failure = runCatching {
             failingRepository.save(original.copy(title = "Replacement"), listOf(pendingPng))
         }.exceptionOrNull()
 
         assertThat(failure).isInstanceOf(IOException::class.java)
-        assertThat(repository.get(original.id).title).isEqualTo("Original")
-        assertThat(repository.get(original.id).media.single().relativePath)
+        assertThat(failingRepository.get(original.id).title).isEqualTo("Original")
+        assertThat(failingRepository.get(original.id).media.single().relativePath)
             .isEqualTo("media/${original.id}/0.jpg")
         assertThat(vaultRoot.resolve("media/${original.id}/0.jpg").exists()).isTrue()
         assertThat(vaultRoot.resolve("media/${original.id}/1.png").exists()).isFalse()
@@ -254,7 +273,7 @@ class VaultRepositoryTest {
                 it.name.contains("temporary-") || it.name.contains("backup-")
             },
         ).isTrue()
-        assertThat(repository.observeTimeline("", emptySet()).first().single().title).isEqualTo("Original")
+        assertThat(failingRepository.observeTimeline("", emptySet()).first().single().title).isEqualTo("Original")
     }
 
     @Test
