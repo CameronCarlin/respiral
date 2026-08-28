@@ -17,6 +17,9 @@ interface EntryIndexDao {
     @Query("DELETE FROM entry_index")
     suspend fun clear()
 
+    @Query("SELECT * FROM entry_index ORDER BY createdAtEpochMs ASC")
+    suspend fun snapshot(): List<EntryIndexEntity>
+
     @Query(
         """
         SELECT * FROM entry_index
