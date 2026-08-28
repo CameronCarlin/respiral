@@ -9,6 +9,7 @@ import java.io.File
 import java.io.FileNotFoundException
 import java.io.IOException
 import java.io.InputStream
+import java.nio.file.Files
 import java.util.UUID
 import kotlinx.coroutines.CancellationException
 
@@ -77,10 +78,16 @@ class VaultFileStore {
         val source = markdownFile(id)
         val destination = recoveryDirectory().resolve("$id.malformed.$MARKDOWN_EXTENSION")
         ensureDirectory(destination.parentFile!!)
+        if (destination.exists()) {
+            if (destination.isFile && source.readBytes().contentEquals(destination.readBytes())) {
+                return destination
+            }
+            throw IOException("A different private recovery copy already exists")
+        }
         val temporary = temporarySibling(destination)
         try {
             source.copyTo(temporary, overwrite = false)
-            move(temporary, destination)
+            Files.move(temporary.toPath(), destination.toPath())
         } catch (error: Throwable) {
             temporary.delete()
             throw error

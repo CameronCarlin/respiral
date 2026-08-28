@@ -130,6 +130,39 @@ class ReflectionFlowTest {
         }
     }
 
+    @OptIn(ExperimentalTestApi::class)
+    @Test
+    fun malformed_markdown_is_preserved_exactly_recovered_through_room_and_rendered() {
+        val database = createOnDeviceLegacyDatabase()
+        try {
+            val row = legacyRow(title = "Recovered malformed note", body = "The indexed words survived.")
+            val malformedBytes = byteArrayOf(0x00, 0x41, 0x7f, 0x42)
+            val repository = runBlocking {
+                database.entryIndexDao().upsert(row)
+                recoveryFixtureRoot.resolve("vault/entries/${row.id}.md").apply {
+                    parentFile!!.mkdirs()
+                    writeBytes(malformedBytes)
+                }
+                val report = LegacyVaultRecovery(fileStore).recover(database.entryIndexDao().snapshot())
+                assertThat(report.recoveredCount).isEqualTo(1)
+                assertThat(recoveryFixtureRoot.resolve("vault/recovery/${row.id}.malformed.md").readBytes())
+                    .isEqualTo(malformedBytes)
+                DefaultVaultRepository(fileStore).apply { refresh(report) }
+            }
+
+            composeTestRule.setContent {
+                RespiralTheme { ReflectionScreen(repository, emptySet(), onBack = {}) }
+            }
+
+            composeTestRule.waitUntilAtLeastOneExists(hasText("The indexed words survived."), 5_000)
+            composeTestRule.onNodeWithText("Recovered malformed note").assertIsDisplayed()
+            composeTestRule.onNodeWithText("The indexed words survived.").assertIsDisplayed()
+        } finally {
+            database.close()
+            recoveryFixtureRoot.deleteRecursively()
+        }
+    }
+
     @Test
     fun library_search_filters_a_reverse_chronological_timeline() {
         val repository = FakeVaultRepository().apply {
@@ -145,6 +178,40 @@ class ReflectionFlowTest {
             composeTestRule.onAllNodesWithTag("timeline-entry").fetchSemanticsNodes().size == 2
         }
         composeTestRule.onAllNodesWithTag("timeline-entry")[0].assertTextContains("Newer kindness")
+    }
+
+    @Test
+    fun loading_library_does_not_claim_the_vault_is_empty() {
+        val repository = FakeVaultRepository().apply {
+            health.value = VaultHealth.Loading
+        }
+        composeTestRule.setContent {
+            LibraryScreen(repository = repository, onEntrySelected = {}, onReflect = {}, onBack = {})
+        }
+
+        composeTestRule.waitForIdle()
+
+        composeTestRule.onAllNodesWithText(
+            "Nothing is here yet. Add a small good thing whenever you are ready.",
+        ).assertCountEquals(0)
+    }
+
+    @Test
+    fun attention_library_shows_diagnostic_and_data_warning_without_the_empty_claim() {
+        val repository = FakeVaultRepository().apply {
+            health.value = VaultHealth.NeedsAttention(VaultDiagnosticCode.RSP_R02, 1)
+        }
+        composeTestRule.setContent {
+            LibraryScreen(repository = repository, onEntrySelected = {}, onReflect = {}, onBack = {})
+        }
+
+        composeTestRule.onNodeWithText(
+            "Some notes need attention. Your original files have not been removed. Diagnostic: RSP-R02.",
+        ).assertIsDisplayed()
+        composeTestRule.onNodeWithText("Do not uninstall Respiral or clear its app data.").assertIsDisplayed()
+        composeTestRule.onAllNodesWithText(
+            "Nothing is here yet. Add a small good thing whenever you are ready.",
+        ).assertCountEquals(0)
     }
 
     private fun createOnDeviceLegacyDatabase(): RespiralDatabase {

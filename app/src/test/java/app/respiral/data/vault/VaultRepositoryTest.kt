@@ -2,12 +2,14 @@ package app.respiral.data.vault
 
 import android.net.Uri
 import app.respiral.core.markdown.CanonicalMarkdownEntryCodec
+import app.respiral.core.markdown.MalformedEntryException
 import app.respiral.core.model.VaultMedia
 import app.respiral.core.model.VaultTag
 import app.respiral.laterInstant
 import app.respiral.sampleEntry
 import com.google.common.truth.Truth.assertThat
 import java.io.File
+import java.io.FileNotFoundException
 import java.io.InputStream
 import java.io.IOException
 import java.util.concurrent.CountDownLatch
@@ -120,6 +122,66 @@ class VaultRepositoryTest {
             .containsExactly("Valid")
         assertThat(repository.health.value)
             .isEqualTo(VaultHealth.NeedsAttention(VaultDiagnosticCode.RSP_R02, 1))
+    }
+
+    @Test
+    fun get_revalidates_a_canonical_file_removed_after_refresh() = runTest {
+        val entry = sampleEntry(title = "Removed after refresh")
+        fileStore.write(entry)
+        repository.refresh()
+        entryDirectory.resolve("${entry.id}.md").delete()
+
+        val failure = runCatching { repository.get(entry.id) }.exceptionOrNull()
+
+        assertThat(failure).isInstanceOf(FileNotFoundException::class.java)
+    }
+
+    @Test
+    fun get_revalidates_canonical_markdown_malformed_after_refresh() = runTest {
+        val entry = sampleEntry(title = "Malformed after refresh")
+        fileStore.write(entry)
+        repository.refresh()
+        entryDirectory.resolve("${entry.id}.md").writeText("newly malformed personal bytes")
+
+        val failure = runCatching { repository.get(entry.id) }.exceptionOrNull()
+
+        assertThat(failure).isInstanceOf(MalformedEntryException::class.java)
+    }
+
+    @Test
+    fun save_refuses_newly_malformed_drift_and_preserves_its_exact_bytes() = runTest {
+        val original = repository.save(sampleEntry(title = "Before drift"), emptyList())
+        val canonical = entryDirectory.resolve("${original.id}.md")
+        val malformedBytes = byteArrayOf(0x00, 0x41, 0x7f, 0x42)
+        canonical.writeBytes(malformedBytes)
+
+        val failure = runCatching {
+            repository.save(original.copy(title = "Would overwrite drift"), emptyList())
+        }.exceptionOrNull()
+
+        assertThat(failure).isInstanceOf(IOException::class.java)
+        assertThat(canonical.readBytes()).isEqualTo(malformedBytes)
+        assertThat(vaultRoot.resolve("recovery/${original.id}.malformed.md").readBytes())
+            .isEqualTo(malformedBytes)
+        assertThat(repository.observeTimeline("", emptySet()).first().single().title)
+            .isEqualTo("Before drift")
+    }
+
+    @Test
+    fun attention_count_uses_the_larger_failure_source_without_double_counting_unknown_overlap() = runTest {
+        entryDirectory.mkdirs()
+        entryDirectory.resolve("unrelated-broken.md").writeText("not canonical")
+
+        repository.refresh(
+            LegacyRecoveryReport(
+                recoveredCount = 0,
+                failureCount = 2,
+                diagnosticCode = VaultDiagnosticCode.RSP_R02,
+            ),
+        )
+
+        assertThat(repository.health.value)
+            .isEqualTo(VaultHealth.NeedsAttention(VaultDiagnosticCode.RSP_R02, 2))
     }
 
     @Test

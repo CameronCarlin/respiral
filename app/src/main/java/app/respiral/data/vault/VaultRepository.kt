@@ -5,6 +5,7 @@ import app.respiral.core.model.VaultEntry
 import app.respiral.core.model.VaultTag
 import java.io.File
 import java.io.FileNotFoundException
+import java.io.IOException
 import java.time.Instant
 import java.util.UUID
 import kotlinx.coroutines.Dispatchers
@@ -95,6 +96,7 @@ class DefaultVaultRepository private constructor(
         pendingMedia: List<PendingMedia>,
     ): VaultEntry = withContext(Dispatchers.IO) {
         mutationMutex.withLock {
+            preserveMalformedDriftBeforeSave(entry.id)
             val previousProjection = projection.value
             val staged = fileStore.stage(entry, pendingMedia)
             val promoted = fileStore.promote(staged)
@@ -134,9 +136,13 @@ class DefaultVaultRepository private constructor(
             .toList()
     }
 
-    override suspend fun get(id: UUID): VaultEntry = projection.value
-        .firstOrNull { it.id == id }
-        ?: throw FileNotFoundException("Vault entry is not in the current projection: $id")
+    override suspend fun get(id: UUID): VaultEntry = withContext(Dispatchers.IO) {
+        mutationMutex.withLock {
+            projection.value.firstOrNull { it.id == id }
+                ?: throw FileNotFoundException("Vault entry is not in the current projection: $id")
+            fileStore.read(id)
+        }
+    }
 
     override suspend fun delete(id: UUID) = withContext(Dispatchers.IO) {
         mutationMutex.withLock {
@@ -193,7 +199,16 @@ class DefaultVaultRepository private constructor(
 
             scan.unreadableCount > 0 -> VaultHealth.NeedsAttention(
                 VaultDiagnosticCode.RSP_R02,
-                scan.unreadableCount,
+                // Persisted recovery state carries counts, not identities. The maximum retains
+                // the strongest known lower bound without double-counting a row whose malformed
+                // canonical file is also present in this scan.
+                maxOf(
+                    scan.unreadableCount,
+                    recoveryReport
+                        ?.takeIf { it.diagnosticCode == VaultDiagnosticCode.RSP_R02 }
+                        ?.failureCount
+                        ?: 0,
+                ),
             )
 
             recoveryReport?.failureCount?.let { it > 0 } == true -> VaultHealth.NeedsAttention(
@@ -207,6 +222,18 @@ class DefaultVaultRepository private constructor(
             else -> VaultHealth.Healthy
         }
         afterRefreshProjectionUpdate()
+    }
+
+    private fun preserveMalformedDriftBeforeSave(id: UUID) {
+        if (!fileStore.entryFileExists(id)) return
+        try {
+            fileStore.read(id)
+        } catch (error: kotlinx.coroutines.CancellationException) {
+            throw error
+        } catch (error: Throwable) {
+            fileStore.quarantineMalformed(id)
+            throw IOException("Canonical Markdown changed and could not be decoded", error)
+        }
     }
 
     private suspend fun mergeImportedVault(

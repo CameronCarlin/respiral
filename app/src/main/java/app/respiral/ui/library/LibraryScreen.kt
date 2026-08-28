@@ -28,6 +28,7 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
 import app.respiral.core.model.VaultTag
 import app.respiral.data.vault.VaultEntrySummary
+import app.respiral.data.vault.VaultHealth
 import app.respiral.data.vault.VaultRepository
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
@@ -85,13 +86,24 @@ fun LibraryScreen(
             viewModel.healthMessage?.let { message ->
                 Text(message, style = MaterialTheme.typography.bodyLarge)
             }
+            if (viewModel.health is VaultHealth.NeedsAttention) {
+                Text(
+                    "Do not uninstall Respiral or clear its app data.",
+                    style = MaterialTheme.typography.bodyLarge,
+                )
+            }
             if (entries.isEmpty()) {
-                val emptyMessage = if (viewModel.query.isBlank() && viewModel.selectedTags.isEmpty()) {
-                    "Nothing is here yet. Add a small good thing whenever you are ready."
-                } else {
-                    "Nothing matches this search yet. You can soften the filters whenever you like."
+                val isUnfiltered = viewModel.query.isBlank() && viewModel.selectedTags.isEmpty()
+                val suppressEmptyMessage = viewModel.health is VaultHealth.Loading ||
+                    (viewModel.health is VaultHealth.NeedsAttention && isUnfiltered)
+                if (!suppressEmptyMessage) {
+                    val emptyMessage = if (isUnfiltered) {
+                        "Nothing is here yet. Add a small good thing whenever you are ready."
+                    } else {
+                        "Nothing matches this search yet. You can soften the filters whenever you like."
+                    }
+                    Text(emptyMessage, style = MaterialTheme.typography.bodyLarge)
                 }
-                Text(emptyMessage, style = MaterialTheme.typography.bodyLarge)
             } else {
                 LazyColumn(
                     modifier = Modifier.weight(1f),

@@ -7,6 +7,7 @@ import app.respiral.core.model.VaultMedia
 import app.respiral.sampleEntry
 import com.google.common.truth.Truth.assertThat
 import java.io.File
+import java.io.IOException
 import kotlin.io.path.createTempDirectory
 import kotlinx.coroutines.CancellationException
 import org.junit.After
@@ -55,6 +56,38 @@ class VaultFileStoreRecoveryTest {
 
         assertThat(preserved.readBytes()).isEqualTo(byteArrayOf(0x00, 0x41, 0x7f))
         assertThat(source.readBytes()).isEqualTo(byteArrayOf(0x00, 0x41, 0x7f))
+    }
+
+    @Test
+    fun quarantine_retry_reuses_an_identical_preservation_copy_without_replacing_it() {
+        val source = entriesDirectory.resolve("${sampleEntry().id}.md")
+        source.parentFile!!.mkdirs()
+        source.writeBytes(byteArrayOf(0x00, 0x41, 0x7f))
+        val first = store.quarantineMalformed(sampleEntry().id)
+        check(first.setLastModified(1_000L))
+
+        val second = store.quarantineMalformed(sampleEntry().id)
+
+        assertThat(second).isEqualTo(first)
+        assertThat(second.lastModified()).isEqualTo(1_000L)
+        assertThat(second.readBytes()).isEqualTo(byteArrayOf(0x00, 0x41, 0x7f))
+        assertThat(source.readBytes()).isEqualTo(byteArrayOf(0x00, 0x41, 0x7f))
+    }
+
+    @Test
+    fun quarantine_collision_refuses_to_replace_different_preserved_bytes() {
+        val source = entriesDirectory.resolve("${sampleEntry().id}.md")
+        source.parentFile!!.mkdirs()
+        source.writeBytes(byteArrayOf(0x01, 0x02, 0x03))
+        val first = store.quarantineMalformed(sampleEntry().id)
+        source.writeBytes(byteArrayOf(0x04, 0x05, 0x06))
+
+        val failure = runCatching { store.quarantineMalformed(sampleEntry().id) }.exceptionOrNull()
+
+        assertThat(failure).isInstanceOf(IOException::class.java)
+        assertThat(first.readBytes()).isEqualTo(byteArrayOf(0x01, 0x02, 0x03))
+        assertThat(source.readBytes()).isEqualTo(byteArrayOf(0x04, 0x05, 0x06))
+        assertThat(vaultRoot.walk().none { it.name.contains("temporary-") }).isTrue()
     }
 
     @Test

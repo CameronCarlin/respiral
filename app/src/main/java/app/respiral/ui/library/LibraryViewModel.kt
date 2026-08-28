@@ -43,6 +43,9 @@ class LibraryViewModel(
 
     private var healthMessageValue by mutableStateOf<String?>(null)
 
+    var health by mutableStateOf<VaultHealth>(VaultHealth.Loading)
+        private set
+
     val healthMessage: String?
         get() = healthMessageValue
 
@@ -58,8 +61,9 @@ class LibraryViewModel(
 
     init {
         scope.launch {
-            repository.health.collect { health ->
-                healthMessageValue = health.messageOrNull()
+            repository.health.collect { updatedHealth ->
+                health = updatedHealth
+                healthMessageValue = updatedHealth.messageOrNull()
             }
         }
     }

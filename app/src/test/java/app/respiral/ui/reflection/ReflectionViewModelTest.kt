@@ -2,7 +2,10 @@ package app.respiral.ui.reflection
 
 import app.respiral.core.model.VaultEntry
 import app.respiral.core.model.VaultTag
+import app.respiral.core.markdown.CanonicalMarkdownEntryCodec
+import app.respiral.data.vault.DefaultVaultRepository
 import app.respiral.data.vault.PendingMedia
+import app.respiral.data.vault.VaultFileStore
 import app.respiral.data.vault.VaultDiagnosticCode
 import app.respiral.data.vault.VaultEntrySummary
 import app.respiral.data.vault.VaultHealth
@@ -10,6 +13,7 @@ import app.respiral.data.vault.VaultRepository
 import com.google.common.truth.Truth.assertThat
 import java.time.Instant
 import java.util.UUID
+import kotlin.io.path.createTempDirectory
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
@@ -80,6 +84,29 @@ class ReflectionViewModelTest {
         assertThat(viewModel.nextEntry()).isTrue()
         assertThat(viewModel.entry).isEqualTo(remaining)
         assertThat(repository.rebuildCalls).isEqualTo(1)
+    }
+
+    @Test
+    fun real_repository_refreshes_once_when_selected_markdown_disappears() = runTest {
+        val vaultRoot = createTempDirectory("respiral-reflection-").toFile()
+        try {
+            val store = VaultFileStore(vaultRoot, CanonicalMarkdownEntryCodec()) { null }
+            val stale = entry("Stale canonical note", emptySet())
+            val remaining = entry("Remaining canonical note", emptySet())
+            store.write(stale)
+            store.write(remaining)
+            val repository = DefaultVaultRepository(store).apply { refresh() }
+            vaultRoot.resolve("entries/${stale.id}.md").delete()
+            val viewModel = ReflectionViewModel(repository, emptySet()) { candidates ->
+                candidates.firstOrNull { it.id == stale.id } ?: candidates.first()
+            }
+
+            assertThat(viewModel.nextEntry()).isTrue()
+            assertThat(viewModel.entry).isEqualTo(remaining)
+            assertThat(viewModel.message).isNull()
+        } finally {
+            vaultRoot.deleteRecursively()
+        }
     }
 
     @Test

@@ -74,22 +74,39 @@ private const val EDITOR_ROUTE = "editor?id={id}&prompt={prompt}&tags={tags}"
 fun AppNavGraph(initialRoute: String? = null) {
     val context = LocalContext.current.applicationContext
     val application = RespiralApplication.from(context)
-    val repository = remember(application) { application.vaultRepository }
     val settingsRepository = remember(context) { application.settingsRepository }
     val session = remember(context) { application.vaultSession }
     val scheduler = remember(context) { DefaultReminderScheduler(AndroidAlarmGateway(context)) }
-    val transfer = remember(context, repository) {
-        ZipVaultTransfer(repository, application.vaultFileStore, context.cacheDir)
+    val awaitRepository: suspend () -> VaultRepository = remember(application) {
+        { application.awaitVaultRepository() }
     }
-    AppNavGraph(
-        repository = repository,
-        settingsRepository = settingsRepository,
-        initialRoute = initialRoute,
-        session = session,
-        authenticator = remember { AndroidVaultAuthenticator() },
-        scheduler = scheduler,
-        transfer = transfer,
-    )
+    VaultReadyGate(awaitRepository) { repository ->
+        val transfer = remember(context, repository) {
+            ZipVaultTransfer(repository, application.vaultFileStore, context.cacheDir)
+        }
+        AppNavGraph(
+            repository = repository,
+            settingsRepository = settingsRepository,
+            initialRoute = initialRoute,
+            session = session,
+            authenticator = remember { AndroidVaultAuthenticator() },
+            scheduler = scheduler,
+            transfer = transfer,
+        )
+    }
+}
+
+@Composable
+internal fun VaultReadyGate(
+    awaitRepository: suspend () -> VaultRepository,
+    content: @Composable (VaultRepository) -> Unit,
+) {
+    var repository by remember(awaitRepository) { mutableStateOf<VaultRepository?>(null) }
+    LaunchedEffect(awaitRepository) {
+        repository = awaitRepository()
+    }
+    val readyRepository = repository
+    if (readyRepository != null) content(readyRepository)
 }
 
 @Composable
