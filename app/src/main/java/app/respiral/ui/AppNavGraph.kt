@@ -58,8 +58,10 @@ import app.respiral.ui.settings.SettingsScreen
 import app.respiral.ui.settings.SettingsViewModel
 import java.util.UUID
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 private const val WELCOME_ROUTE = "welcome"
 private const val ARRIVAL_ROUTE = "arrival"
@@ -157,10 +159,12 @@ internal fun AppNavGraph(
         if (!granted) transferMessage = "Notifications remain off until you allow them."
     }
 
-    val startDestination = when (initialRoute) {
-        "reflection" -> reflectionRoute()
-        "editor" -> editorRoute()
-        else -> if (currentSettings.onboardingSeen) ARRIVAL_ROUTE else WELCOME_ROUTE
+    val startDestination = remember {
+        when (initialRoute) {
+            "reflection" -> reflectionRoute()
+            "editor" -> editorRoute()
+            else -> if (currentSettings.onboardingSeen) ARRIVAL_ROUTE else WELCOME_ROUTE
+        }
     }
     val firstComposition = remember { mutableStateOf(true) }
     LaunchedEffect(initialRoute) {
@@ -187,8 +191,23 @@ internal fun AppNavGraph(
             Guard {
                 val id = entry.arguments?.getString("id")?.takeIf(String::isNotBlank)?.let(UUID::fromString)
                 EntryEditorScreen(repository, id, entry.arguments?.getString("prompt").orEmpty(), parseTags(entry.arguments?.getString("tags").orEmpty()), onSaved = {
-                    scope.launch { markOnboardingSeen(settingsRepository); navController.navigate(LIBRARY_ROUTE) { popUpTo(navController.graph.startDestinationId) { inclusive = true } } }
-                }, onDeleted = { navController.navigate(LIBRARY_ROUTE) { popUpTo(LIBRARY_ROUTE) { inclusive = true } } })
+                    scope.launch {
+                        markOnboardingSeen(settingsRepository)
+                        withContext(Dispatchers.Main.immediate) {
+                            navController.navigate(LIBRARY_ROUTE) {
+                                popUpTo(navController.graph.startDestinationId) { inclusive = true }
+                            }
+                        }
+                    }
+                }, onDeleted = {
+                    scope.launch {
+                        withContext(Dispatchers.Main.immediate) {
+                            navController.navigate(LIBRARY_ROUTE) {
+                                popUpTo(LIBRARY_ROUTE) { inclusive = true }
+                            }
+                        }
+                    }
+                })
             }
         }
         composable(ARRIVAL_ROUTE) {

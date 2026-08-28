@@ -29,7 +29,9 @@ import androidx.compose.ui.unit.dp
 import app.respiral.core.model.VaultTag
 import app.respiral.data.vault.VaultRepository
 import java.util.UUID
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 @Composable
 fun EntryEditorScreen(
@@ -100,7 +102,11 @@ fun EntryEditorScreen(
                 enabled = !viewModel.isLoading,
                 onClick = {
                     scope.launch {
-                        if (viewModel.save()) onSaved(viewModel.title) else message = viewModel.errorMessage
+                        if (viewModel.save()) {
+                            withContext(Dispatchers.Main.immediate) { onSaved(viewModel.title) }
+                        } else {
+                            message = viewModel.errorMessage
+                        }
                     }
                 },
             ) { Text("Save") }
@@ -120,7 +126,11 @@ fun EntryEditorScreen(
                     onClick = {
                         confirmDelete = false
                         scope.launch {
-                            if (viewModel.delete()) onDeleted() else message = viewModel.errorMessage
+                            if (viewModel.delete()) {
+                                withContext(Dispatchers.Main.immediate) { onDeleted() }
+                            } else {
+                                message = viewModel.errorMessage
+                            }
                         }
                     },
                 ) { Text("Delete") }

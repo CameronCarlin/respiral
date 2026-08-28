@@ -1,7 +1,9 @@
 package app.respiral.ui.capture
 
 import androidx.compose.ui.test.assertIsDisplayed
-import androidx.compose.ui.test.junit4.createAndroidComposeRule
+import androidx.compose.ui.test.ExperimentalTestApi
+import androidx.compose.ui.test.hasText
+import androidx.compose.ui.test.junit4.v2.createAndroidComposeRule
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
@@ -21,12 +23,16 @@ class EntryEditorScreenTest {
         composeTestRule.onNodeWithText("A reminder for a difficult day").assertIsDisplayed()
     }
 
+    @OptIn(ExperimentalTestApi::class)
     @Test
-    fun saving_a_freeform_note_returns_to_the_library() {
+    fun first_save_opens_library_and_the_note_opens_again() {
         composeTestRule.onNodeWithText("Add something good").performClick()
         composeTestRule.onNodeWithTag("entry-title").performTextInput("I showed up")
         composeTestRule.onNodeWithTag("entry-body").performTextInput("I called a friend when it mattered.")
         composeTestRule.onNodeWithText("Save").performClick()
-        composeTestRule.onNodeWithText("I showed up").assertIsDisplayed()
+
+        composeTestRule.waitUntilAtLeastOneExists(hasText("Your library"), 5_000)
+        composeTestRule.onNodeWithText("I showed up").performClick()
+        composeTestRule.onNodeWithText("I called a friend when it mattered.").assertIsDisplayed()
     }
 }
