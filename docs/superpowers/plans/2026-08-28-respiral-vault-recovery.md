@@ -567,10 +567,12 @@ git commit -m "fix: stabilise vault navigation after persistence"
 
 ```kotlin
 @Test fun legacy_index_only_note_is_recovered_and_reflection_displays_its_body() {
-    val database = createOnDeviceLegacyDatabase()
-    database.entryIndexDao().upsert(legacyRow(title = "Still me", body = "I stayed kind under pressure."))
-    val report = LegacyVaultRecovery(fileStore).recover(database.entryIndexDao().snapshot())
-    val repository = DefaultVaultRepository(fileStore).apply { refresh(report) }
+    val repository = runBlocking {
+        val database = createOnDeviceLegacyDatabase()
+        database.entryIndexDao().upsert(legacyRow(title = "Still me", body = "I stayed kind under pressure."))
+        val report = LegacyVaultRecovery(fileStore).recover(database.entryIndexDao().snapshot())
+        DefaultVaultRepository(fileStore).apply { refresh(report) }
+    }
 
     composeTestRule.setContent {
         RespiralTheme { ReflectionScreen(repository, emptySet(), onBack = {}) }
