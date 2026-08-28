@@ -410,13 +410,7 @@ class VaultFileStore {
         else -> ".bin"
     }
 
-    private fun mimeTypeFor(file: File): String? = when (file.extension.lowercase()) {
-        "jpg", "jpeg" -> "image/jpeg"
-        "png" -> "image/png"
-        "webp" -> "image/webp"
-        "gif" -> "image/gif"
-        else -> null
-    }
+    private fun mimeTypeFor(file: File): String? = SUPPORTED_MEDIA_MIME_TYPES[file.extension.lowercase()]
 
     private companion object {
         const val VAULT_DIRECTORY = "vault"
@@ -424,5 +418,13 @@ class VaultFileStore {
         const val MEDIA_DIRECTORY = "media"
         const val RECOVERY_DIRECTORY = "recovery"
         const val MARKDOWN_EXTENSION = "md"
+
+        val SUPPORTED_MEDIA_MIME_TYPES = mapOf(
+            "jpg" to "image/jpeg",
+            "jpeg" to "image/jpeg",
+            "png" to "image/png",
+            "webp" to "image/webp",
+            "gif" to "image/gif",
+        )
     }
 }
