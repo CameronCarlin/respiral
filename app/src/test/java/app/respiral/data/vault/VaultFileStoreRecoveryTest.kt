@@ -44,7 +44,7 @@ class VaultFileStoreRecoveryTest {
     @Test
     fun quarantine_copies_exact_source_bytes_without_removing_the_original() {
         val source = entriesDirectory.resolve("${sampleEntry().id}.md")
-        source.parentFile.mkdirs()
+        source.parentFile!!.mkdirs()
         source.writeBytes(byteArrayOf(0x00, 0x41, 0x7f))
 
         val preserved = store.quarantineMalformed(sampleEntry().id)
